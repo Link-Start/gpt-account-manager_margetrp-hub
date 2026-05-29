@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GPT账号管理助手 - 部署自检</title>
+  <link rel="stylesheet" href="/styles.css?v=20260530-gpt-account-manager">
+  <link rel="stylesheet" href="/forge-theme.css?v=20260530-gpt-account-manager">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar app-header">
+      <a class="brand" href="/" aria-label="GPT账号管理助手">
+        <span class="brand-mark" aria-hidden="true">OK</span>
+        <span class="brand-copy">
+          <strong>部署自检</strong>
+          <em>版本 · 配置 · 数据计数 · 服务状态</em>
+        </span>
+      </a>
+      <nav class="topnav" aria-label="顶部导航">
+        <a href="/">账号管理</a>
+        <a href="/refresh.html">凭证刷新</a>
+        <a href="/warehouse.html">CPA 仓管</a>
+        <a href="/public-pool" target="_blank" rel="noreferrer">公益站</a>
+      </nav>
+    </header>
+
+    <main class="health-grid">
+      <section class="panel health-hero">
+        <div>
+          <p class="eyebrow">Health</p>
+          <h1 id="healthTitle">读取中</h1>
+          <p id="healthSub">正在检查当前服务版本和运行配置。</p>
+        </div>
+        <button id="reloadHealth" class="primary" type="button">重新检测</button>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <h2>核心状态</h2>
+          <span id="healthBadge" class="status-pill">-</span>
+        </div>
+        <div id="coreGrid" class="health-kv"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <h2>功能配置</h2>
+          <span>不显示密钥</span>
+        </div>
+        <div id="featureGrid" class="health-kv"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <h2>数据计数</h2>
+          <span>服务端文件</span>
+        </div>
+        <div id="dataGrid" class="health-kv"></div>
+      </section>
+
+      <section class="panel health-raw">
+        <div class="section-head">
+          <h2>原始 JSON</h2>
+          <span>/health</span>
+        </div>
+        <pre id="rawHealth">{}</pre>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const els = {
+      title: document.querySelector("#healthTitle"),
+      sub: document.querySelector("#healthSub"),
+      badge: document.querySelector("#healthBadge"),
+      core: document.querySelector("#coreGrid"),
+      features: document.querySelector("#featureGrid"),
+      data: document.querySelector("#dataGrid"),
+      raw: document.querySelector("#rawHealth"),
+      reload: document.querySelector("#reloadHealth"),
+    };
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function kv(rows) {
+      return rows.map(([key, value]) => `
+        <div class="health-item">
+          <span>${escapeHtml(key)}</span>
+          <strong>${escapeHtml(value)}</strong>
+        </div>
+      `).join("");
+    }
+
+    async function loadHealth() {
+      els.title.textContent = "读取中";
+      els.badge.textContent = "-";
+      const [payload, network] = await Promise.all([
+        readJsonEndpoint("/health"),
+        readJsonEndpoint("/network-health"),
+      ]);
+      els.raw.textContent = JSON.stringify({ health: payload, network }, null, 2);
+      els.title.textContent = payload.ok ? "服务正常" : "服务异常";
+      els.sub.textContent = `${payload.app || "-"} · ${payload.version || "-"} · ${payload.started_at || "-"}`;
+      els.badge.textContent = payload.version || "-";
+      els.core.innerHTML = kv([
+        ["版本", payload.version],
+        ["启动时间", payload.started_at],
+        ["当前时间", payload.now],
+        ["监听", `${payload.host}:${payload.port}`],
+        ["管理令牌", payload.admin_token_set ? "已设置" : "未设置"],
+      ]);
+      els.features.innerHTML = kv([
+        ["临时邮箱 API", payload.urls?.temp_worker],
+        ["取信网络", network.ok ? "正常" : "DNS/网络异常"],
+        ["公益站", payload.urls?.public_pool],
+        ["公益池 API", payload.features?.public_pool_api ? "已配置" : "未配置"],
+        ["CPA 内网远程", payload.features?.cpa_private_remote_allowed ? "允许" : "关闭"],
+        ["刷新链路", "协议登录"],
+      ]);
+      els.data.innerHTML = kv([
+        ["Outlook 账号", payload.data_counts?.microsoft_accounts],
+        ["临时邮箱", payload.data_counts?.temp_addresses],
+        ["邮件缓存", payload.data_counts?.messages],
+        ["数据目录", payload.paths?.data],
+      ]);
+    }
+
+    function healthAuthHeaders() {
+      const token = new URLSearchParams(window.location.search).get("token") || localStorage.getItem("ctgptm.admin.toolToken") || "";
+      if (token) localStorage.setItem("ctgptm.admin.toolToken", token);
+      return token ? { Authorization: `Bearer ${token}` } : {};
+    }
+
+    async function readJsonEndpoint(path) {
+      const response = await fetch(`${path}?t=${Date.now()}`, {
+        cache: "no-store",
+        headers: healthAuthHeaders(),
+      });
+      const contentType = response.headers.get("content-type") || "";
+      const text = await response.text();
+      if (!contentType.includes("application/json")) {
+        throw new Error(`${path} 返回了 ${contentType || "非 JSON"}，当前线上可能还是旧包，或 Nginx 把接口转到了前端页面：${text.replace(/\s+/g, " ").slice(0, 160)}`);
+      }
+      return JSON.parse(text || "{}");
+    }
+
+    els.reload.addEventListener("click", () => loadHealth().catch((error) => {
+      els.title.textContent = "检测失败";
+      els.sub.textContent = error.message || "无法读取 /health";
+      els.badge.textContent = "error";
+    }));
+    loadHealth().catch((error) => {
+      els.title.textContent = "检测失败";
+      els.sub.textContent = error.message || "无法读取 /health";
+      els.badge.textContent = "error";
+    });
+  </script>
+</body>
+</html>

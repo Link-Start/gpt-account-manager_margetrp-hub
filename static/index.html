@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GPT账号管理助手</title>
+  <link rel="stylesheet" href="/styles.css?v=20260530-gpt-account-manager">
+  <link rel="stylesheet" href="/forge-theme.css?v=20260530-gpt-account-manager">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar app-header">
+      <a class="brand" href="/" aria-label="客户端首页">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="23" height="23">
+            <path d="M12 3 3.5 7.4 12 12l8.5-4.6L12 3Z"></path>
+            <path d="m4 12 8 4.3 8-4.3"></path>
+            <path d="m4 16.5 8 4.3 8-4.3"></path>
+          </svg>
+        </span>
+        <span class="brand-copy">
+          <strong>GPT账号管理助手</strong>
+          <em>账号仓管 / 邮件验证码 / 凭证刷新</em>
+        </span>
+      </a>
+      <nav class="topnav" aria-label="顶部导航">
+        <a href="https://shop.ohlaoo.com/" target="_blank" rel="noreferrer">商城</a>
+        <a href="https://ohlaoo.com/" target="_blank" rel="noreferrer">中转站</a>
+        <a href="/public-pool" target="_blank" rel="noreferrer">公益站</a>
+        <a class="github-link" href="https://github.com/margetrp-hub/gpt-account-manager" target="_blank" rel="noreferrer" aria-label="GitHub 开源项目">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M8 0C3.58 0 0 3.67 0 8.2c0 3.62 2.29 6.69 5.47 7.78.4.08.55-.18.55-.4 0-.2-.01-.84-.01-1.52-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.15-.28-.16-.68-.55-.01-.56.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.1-1.78-.21-3.64-.91-3.64-4.04 0-.89.31-1.62.82-2.19-.08-.21-.36-1.04.08-2.16 0 0 .67-.22 2.2.84A7.35 7.35 0 0 1 8 3.97c.68 0 1.36.09 2 .27 1.53-1.06 2.2-.84 2.2-.84.44 1.12.16 1.95.08 2.16.51.57.82 1.3.82 2.19 0 3.14-1.87 3.83-3.65 4.04.29.26.54.76.54 1.54 0 1.1-.01 1.99-.01 2.26 0 .22.15.48.55.4A8.08 8.08 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z"></path>
+          </svg>
+          GitHub
+        </a>
+      </nav>
+    </header>
+
+    <nav class="module-tabs" aria-label="功能导航">
+      <button class="module-tab active" id="tabMailBtn" type="button" aria-current="page">
+        <span>✓</span>
+        <strong>账号管理</strong>
+      </button>
+      <a class="module-tab" href="/refresh.html">
+        <span>↻</span>
+        <strong>凭证刷新</strong>
+      </a>
+      <a class="module-tab" href="/converter.html">
+        <span>⇄</span>
+        <strong>Session 转换</strong>
+      </a>
+      <a class="module-tab" href="/warehouse.html">
+        <span>→</span>
+        <strong>CPA 仓管</strong>
+      </a>
+      <a class="module-tab" href="https://ohlaoo.com/" target="_blank" rel="noreferrer">
+        <span>★</span>
+        <strong>中转站</strong>
+      </a>
+    </nav>
+
+    <main class="workspace">
+      <aside class="sidebar">
+        <section class="panel mailbox-panel">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Mailbox list</p>
+              <h2>邮箱清单</h2>
+            </div>
+            <div class="mailbox-head-counts" aria-label="邮箱数量"><span>临时 <strong id="tempCount">0</strong></span><span>Outlook <strong id="msCount">0</strong></span><span>总数 <strong id="mailboxTotal">0</strong></span></div>
+          </div>
+          <div class="mailbox-search-row">
+            <input id="mailboxSearch" placeholder="搜索邮箱">
+          </div>
+          <div class="panel-actions import-actions">
+            <button id="importMailboxBtn" class="primary" type="button">导入邮箱</button>
+          </div>
+          <div class="panel-actions secondary-actions">
+            <button id="selectAllBtn" type="button">全选</button>
+            <button id="backupLocalBtn" type="button">备份</button>
+            <label class="inline-file-button" for="restoreLocalFile">恢复<input id="restoreLocalFile" type="file" accept=".json,application/json"></label>
+            <button id="clearLocalBtn" class="ghost danger" type="button">清空本地</button>
+          </div>
+          <div class="mailbox-tools">
+            <select id="mailboxCategoryFilter"></select>
+            <input id="categoryName" placeholder="新分组">
+            <button id="addCategoryBtn" type="button">添加分组</button>
+            <button id="deleteCategoryBtn" class="ghost danger" type="button">删除分组</button>
+          </div>
+          <div class="mailbox-pager">
+            <select id="mailboxPageSize">
+              <option value="10">10 / 页</option>
+              <option value="20" selected>20 / 页</option>
+              <option value="50">50 / 页</option>
+            </select>
+            <button id="mailboxPrevPage" type="button" aria-label="上一页">‹</button>
+            <span id="mailboxPageText">1 / 1</span>
+            <button id="mailboxNextPage" type="button" aria-label="下一页">›</button>
+          </div>
+          <div id="mailboxList" class="mailbox-list empty">暂无邮箱</div>
+        </section>
+      </aside>
+
+      <section class="main-panel">
+        <div class="search-strip" id="mailSearchStrip" hidden>
+          <div class="search-title">
+            <p class="eyebrow">Local mail cache</p>
+            <h1>邮箱取件</h1>
+          </div>
+          <div class="search-grid">
+            <input id="queryInput" placeholder="搜索主题、正文、验证码、链接、邮箱">
+            <input id="senderInput" placeholder="发件人">
+            <select id="sourceFilter">
+              <option value="all">全部来源</option>
+              <option value="temp">临时邮箱</option>
+              <option value="microsoft">Outlook</option>
+            </select>
+            <select id="providerFilter" aria-label="Microsoft receive method">
+              <option value="auto">微软自动</option>
+              <option value="graph">微软 Graph</option>
+              <option value="imap">微软 IMAP</option>
+            </select>
+            <select id="categoryFilter"></select>
+            <button id="syncBtn" class="primary sync" type="button">收取邮件</button>
+          </div>
+        </div>
+
+        <div class="status-row" id="mailStatusRow" hidden>
+          <span id="statusText">数据只保存在当前浏览器</span>
+          <span class="inline-progress" id="mailProgress" hidden>
+            <i style="width: 0%"></i>
+            <em>0%</em>
+          </span>
+          <span id="pageSummary">0 封邮件</span>
+        </div>
+
+        <section class="login-console" id="loginConsole">
+          <div class="section-head">
+            <div>
+              <h2>异常扫描台</h2>
+              <p>先扫描 CPA 401，或把左侧选中的邮箱加入异常列表，再选中执行刷新。</p>
+            </div>
+            <div class="login-actions">
+              <button id="loginSelectedBtn" class="primary" type="button">执行选中异常</button>
+              <button id="loginRetryBtn" type="button">重试失败</button>
+              <button id="exportCpaBtn" type="button">导出 CPA JSON</button>
+              <button id="exportSub2Btn" type="button">导出 sub2api JSON</button>
+            </div>
+          </div>
+          <div class="cpa-scan-grid">
+            <label>
+              <span>CPA 地址</span>
+              <input id="cpaBaseUrl" placeholder="http://127.0.0.1:8317">
+            </label>
+            <label>
+              <span>管理密钥</span>
+              <input id="cpaKey" type="password" placeholder="只保存在本地浏览器">
+            </label>
+            <label>
+              <span>扫描数量</span>
+              <input id="cpaLimit" type="number" min="1" max="500" value="50">
+            </label>
+            <div class="cpa-scan-actions">
+              <button id="scanCpaBtn" type="button">扫描 CPA 401</button>
+              <button id="scanSelectedMailBtn" type="button">加入选中邮箱</button>
+              <button id="clearAbnormalBtn" class="ghost danger" type="button">清空异常</button>
+            </div>
+          </div>
+          <div class="login-stats">
+            <span>异常 <strong id="loginTotal">0</strong></span>
+            <span>等待 <strong id="loginIdle">0</strong></span>
+            <span>刷新中 <strong id="loginRunning">0</strong></span>
+            <span>成功 <strong id="loginSuccess">0</strong></span>
+            <span>失败 <strong id="loginFailed">0</strong></span>
+          </div>
+          <div class="login-table-wrap">
+            <table class="login-table">
+              <thead>
+                <tr>
+                  <th>选择</th>
+                  <th>账号</th>
+                  <th>来源</th>
+                  <th>状态</th>
+                  <th>错误</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="loginTableBody">
+                <tr><td colspan="6" class="empty-cell">先扫描 CPA 异常，或加入左侧选中的邮箱。</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="client-log-panel" id="clientLogPanel" hidden>
+          <div class="section-head">
+            <h2>运行日志</h2>
+            <button id="clearClientLogsBtn" type="button">清空</button>
+          </div>
+          <div class="client-log-list" id="clientLogList">
+            <div class="client-log-item">等待操作。</div>
+          </div>
+        </section>
+
+        <div class="mail-layout" id="mailWorkspace" hidden>
+          <section class="mail-list-panel">
+            <div class="section-head">
+              <h2>邮件列表</h2>
+              <div class="pager-tools">
+                <select id="pageSize">
+                  <option value="10">10 / 页</option>
+                  <option value="20" selected>20 / 页</option>
+                  <option value="50">50 / 页</option>
+                </select>
+                <button id="prevPage" type="button" aria-label="上一页">‹</button>
+                <span id="pageText">1 / 1</span>
+                <button id="nextPage" type="button" aria-label="下一页">›</button>
+                <button id="deleteFilteredBtn" class="ghost danger" type="button" disabled>批量删除</button>
+              </div>
+            </div>
+            <div id="mailList" class="mail-list empty">导入邮箱后点击刷新邮件</div>
+          </section>
+
+          <section class="mail-detail-panel">
+            <div class="section-head">
+              <h2>邮件详情</h2>
+              <div class="detail-actions">
+                <button id="copyCodeBtn" class="primary" type="button" disabled>复制验证码</button>
+                <button id="pushRefreshBtn" type="button" disabled>推送刷新池</button>
+                <button id="deleteMessageBtn" class="ghost danger" type="button" disabled>删除邮件</button>
+              </div>
+            </div>
+            <article id="mailDetail" class="mail-detail empty">从左侧选择邮件后显示详情，可在这里复制验证码。</article>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="importModal" class="modal-backdrop" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="importModalTitle">
+      <div class="modal-head">
+        <div>
+          <p id="importModalEyebrow" class="eyebrow">Import</p>
+          <h2 id="importModalTitle">导入邮箱</h2>
+        </div>
+        <button id="closeImportModal" class="icon" type="button" aria-label="关闭">×</button>
+      </div>
+      <label class="modal-field">
+        <span>邮箱服务</span>
+        <select id="importServiceSelect">
+          <option value="auto">自动识别</option>
+          <option value="temp">临时邮箱</option>
+          <option value="microsoft">Outlook</option>
+        </select>
+      </label>
+      <p id="importFormatHint" class="modal-hint">导入时保持 Outlook 四段格式。</p>
+      <label id="importTempApiField" class="modal-field" hidden>
+        <span>Temp API 地址</span>
+        <input id="importTempApi" type="url" placeholder="https://maip.wsphl.cfd">
+      </label>
+      <label id="importTempSitePasswordField" class="modal-field" hidden>
+        <span>站点口令</span>
+        <input id="importTempSitePassword" type="password" autocomplete="off" placeholder="可选，只作用于当前导入批次">
+      </label>
+      <label class="modal-file button-file" for="importFile">
+        <span>选择文件</span>
+        <em>支持 TXT / JSON / CSV</em>
+        <input id="importFile" type="file" accept=".txt,.json,.csv,text/plain,application/json,text/csv">
+      </label>
+      <textarea id="importText" spellcheck="false"></textarea>
+      <div id="importPreview" class="import-preview">粘贴后会先预检格式，不会直接上传。</div>
+      <div class="modal-actions">
+        <button id="cancelImportBtn" class="ghost" type="button">取消</button>
+        <button id="confirmImportBtn" class="primary" type="button">导入</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/client.js?v=20260530-gpt-account-manager" defer></script>
+</body>
+</html>

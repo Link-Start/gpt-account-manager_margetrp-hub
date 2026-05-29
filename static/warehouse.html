@@ -1,0 +1,2449 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GPT账号管理助手 - CPA 仓管</title>
+    <meta name="theme-color" content="#2f75ff" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any" />
+    <style>
+      :root {
+        color-scheme: light;
+        --surface: rgba(255, 255, 255, 0.72);
+        --line: rgba(142, 165, 199, 0.26);
+        --line-strong: rgba(101, 138, 191, 0.36);
+        --text: #17243b;
+        --muted: #8797b2;
+        --accent: #2f75ff;
+        --accent-strong: #0b62d8;
+        --success: #118a61;
+        --danger: #d43d51;
+        --warning: #8a5a14;
+        --shadow: 0 16px 44px rgba(74, 108, 157, 0.16);
+        --radius: 8px;
+        --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        --sans: "Inter", "Avenir Next", "Helvetica Neue", "PingFang SC", "Noto Sans SC", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      html,
+      body {
+        min-height: 100%;
+        margin: 0;
+      }
+
+      body {
+        font-family: var(--sans);
+        color: var(--text);
+        background:
+          linear-gradient(140deg, rgba(208, 231, 255, 0.9) 0%, rgba(243, 249, 255, 0.92) 42%, rgba(245, 241, 255, 0.88) 100%),
+          radial-gradient(ellipse at 28% 82%, rgba(146, 213, 255, 0.26), transparent 45%);
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background:
+          linear-gradient(90deg, rgba(255, 255, 255, 0.36) 1px, transparent 1px) 0 0 / 40px 40px,
+          linear-gradient(0deg, rgba(68, 106, 159, 0.07) 1px, transparent 1px) 0 0 / 40px 40px;
+        mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.4), transparent 72%);
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      button {
+        border: 0;
+      }
+
+      .app {
+        position: relative;
+        z-index: 1;
+        width: min(1600px, calc(100vw - 24px));
+        margin: 0 auto;
+        padding: 14px 0 22px;
+      }
+
+      .topbar,
+      .module-tabs,
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--surface);
+        box-shadow: 0 10px 28px rgba(70, 105, 160, 0.1);
+        backdrop-filter: blur(18px);
+      }
+
+      .topbar {
+        min-height: 66px;
+        margin-bottom: 14px;
+        padding: 12px 16px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+      }
+
+      .brand {
+        min-width: 0;
+        display: inline-flex;
+        align-items: center;
+        gap: 14px;
+        color: var(--text);
+        text-decoration: none;
+      }
+
+      .brand-mark {
+        width: 40px;
+        height: 40px;
+        display: inline-grid;
+        flex: 0 0 auto;
+        place-items: center;
+        border-radius: 8px;
+        background: linear-gradient(145deg, #28b9f2, #2478ff);
+        color: #fff;
+        box-shadow: 0 12px 26px rgba(47, 117, 255, 0.32);
+      }
+
+      .brand-mark svg {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .brand-copy {
+        min-width: 0;
+        display: grid;
+      }
+
+      .brand-copy strong {
+        color: var(--text);
+        font-size: 18px;
+        line-height: 1.2;
+        font-weight: 850;
+      }
+
+      .brand-copy em {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+        font-style: normal;
+        font-weight: 700;
+      }
+
+      .topnav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: flex-end;
+      }
+
+      .meta-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 30px;
+        padding: 5px 8px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.68);
+        color: #28506e;
+        font-size: 0.78rem;
+        font-weight: 800;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+
+      .github-link svg {
+        width: 15px;
+        height: 15px;
+        flex: 0 0 auto;
+        fill: currentColor;
+      }
+
+      .module-tabs {
+        margin-bottom: 14px;
+        padding: 5px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        overflow-x: auto;
+      }
+
+      .module-tab {
+        min-height: 30px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        flex: 0 0 auto;
+        border-radius: var(--radius);
+        background: transparent;
+        color: #8a9ab4;
+        text-decoration: none;
+        font-size: 12px;
+        font-weight: 850;
+        padding: 5px 8px;
+      }
+
+      .module-tab span {
+        width: 15px;
+        height: 15px;
+        display: inline-grid;
+        place-items: center;
+        color: currentColor;
+        font-size: 12px;
+      }
+
+      .module-tab.active {
+        min-width: 112px;
+        background: linear-gradient(135deg, #3f86ff, #1f6dff);
+        color: #fff;
+        box-shadow: 0 12px 24px rgba(47, 117, 255, 0.28);
+      }
+
+      .module-tab strong {
+        font: inherit;
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 12px;
+      }
+
+      .panel {
+        min-width: 0;
+        box-shadow: var(--shadow);
+      }
+
+      .panel-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .panel-head h1,
+      .panel-head h2 {
+        margin: 0;
+        font-size: 1.05rem;
+        line-height: 1.35;
+      }
+
+      .panel-head p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 0.88rem;
+        line-height: 1.45;
+      }
+
+      .panel-body {
+        padding: 10px 14px 12px;
+      }
+
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        min-height: 30px;
+        gap: 6px;
+        padding: 5px 8px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.72);
+        color: var(--muted);
+        font-size: 0.82rem;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
+      .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: currentColor;
+      }
+
+      .status-pill.running {
+        color: var(--accent);
+      }
+
+      .status-pill.connected {
+        color: var(--success);
+      }
+
+      .status-pill.error {
+        color: var(--danger);
+      }
+
+      .config-grid {
+        display: grid;
+        grid-template-columns: minmax(220px, 1.35fr) minmax(190px, 0.95fr) 86px auto;
+        gap: 7px;
+        align-items: end;
+        margin-bottom: 8px;
+      }
+
+      .form-field {
+        min-width: 0;
+        display: grid;
+        gap: 4px;
+      }
+
+      .form-field > span {
+        color: var(--muted);
+        font-size: 0.78rem;
+        font-weight: 850;
+      }
+
+      .form-field input {
+        width: 100%;
+        min-height: 28px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 5px 8px;
+        background: rgba(255, 255, 255, 0.82);
+        color: var(--text);
+        outline: 0;
+      }
+
+      .form-field input:focus,
+      .auto-fields input:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(47, 117, 255, 0.12);
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        justify-content: flex-end;
+      }
+
+      .subdued-action {
+        opacity: 0.58;
+      }
+
+      .advanced-panel {
+        margin-bottom: 8px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.42);
+      }
+
+      .advanced-panel summary {
+        cursor: pointer;
+        padding: 7px 10px;
+        color: var(--muted);
+        font-size: 0.82rem;
+        font-weight: 850;
+      }
+
+      .proxy-row {
+        display: grid;
+        grid-template-columns: auto minmax(240px, 1fr) 150px;
+        gap: 10px;
+        align-items: end;
+        margin: 0 10px 10px;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.52);
+      }
+
+      .proxy-row .toggle {
+        margin-bottom: 8px;
+      }
+
+      .button {
+        min-height: 28px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 4px 7px;
+        border-radius: var(--radius);
+        cursor: pointer;
+        line-height: 1.15;
+        white-space: nowrap;
+        transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+      }
+
+      .button-primary {
+        background: linear-gradient(135deg, #3c82ff, #1f6dff);
+        color: #fff;
+        box-shadow: 0 12px 24px rgba(47, 117, 255, 0.22);
+      }
+
+      .button-secondary,
+      .button-ghost {
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.78);
+        color: var(--text);
+      }
+
+      .button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      .auto-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 0 10px 8px;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.52);
+      }
+
+      .toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        color: var(--text);
+        font-size: 0.88rem;
+        font-weight: 850;
+      }
+
+      .toggle input {
+        width: 17px;
+        height: 17px;
+        accent-color: var(--accent);
+      }
+
+      .auto-fields {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 0.84rem;
+        font-weight: 800;
+      }
+
+      .auto-fields input {
+        width: 82px;
+        min-height: 34px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 6px 8px;
+        background: rgba(255, 255, 255, 0.82);
+        color: var(--text);
+      }
+
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+
+      .stat {
+        min-height: 48px;
+        padding: 7px 10px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.58);
+      }
+
+      .stat-value {
+        font-family: var(--mono);
+        font-size: 1.05rem;
+        font-weight: 800;
+      }
+
+      .stat-label {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+
+      .warehouse-workspace {
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+        gap: 12px;
+        align-items: stretch;
+      }
+
+      .table-wrap {
+        overflow: auto;
+        max-height: 360px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+        font-size: 0.86rem;
+      }
+
+      th,
+      td {
+        padding: 9px 10px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: #edf6ff;
+        color: var(--muted);
+        font-size: 0.78rem;
+        font-weight: 800;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .col-name {
+        width: 24%;
+      }
+
+      .col-email {
+        width: 28%;
+      }
+
+      .col-action {
+        width: 15%;
+      }
+
+      .col-check {
+        width: 44px;
+      }
+
+      .row-check {
+        width: 16px;
+        height: 16px;
+        accent-color: var(--accent);
+      }
+
+      .cell-clip {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .empty {
+        color: var(--muted);
+      }
+
+      .ok {
+        color: var(--success);
+        font-weight: 800;
+      }
+
+      .bad {
+        color: var(--danger);
+        font-weight: 800;
+      }
+
+      .status-tag {
+        display: inline-flex;
+        align-items: center;
+        min-height: 20px;
+        padding: 2px 7px;
+        border-radius: 999px;
+        font-size: 0.74rem;
+        font-weight: 900;
+        white-space: nowrap;
+      }
+
+      .status-tag.ready {
+        background: rgba(30, 134, 91, 0.12);
+        color: #0d7a50;
+      }
+
+      .status-tag.warn {
+        background: rgba(217, 119, 6, 0.12);
+        color: #a45a05;
+      }
+
+      .status-tag.bad {
+        background: rgba(212, 61, 81, 0.12);
+        color: #b42b42;
+      }
+
+      .status-tag.queued {
+        background: rgba(47, 117, 255, 0.12);
+        color: #255fca;
+      }
+
+      .log-panel {
+        min-height: 360px;
+        max-height: 360px;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.54);
+        padding: 10px;
+      }
+
+      .log-panel h2 {
+        margin: 0 0 8px;
+        font-size: 0.92rem;
+      }
+
+      .log-list {
+        display: grid;
+        gap: 7px;
+      }
+
+      .log-item {
+        padding: 8px 9px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.68);
+        color: #415069;
+        font-size: 0.82rem;
+        line-height: 1.45;
+      }
+
+      .log-item.success {
+        color: var(--success);
+      }
+
+      .log-item.warning {
+        color: var(--warning);
+      }
+
+      .log-item.error {
+        color: var(--danger);
+      }
+
+      .status-line {
+        min-height: 22px;
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 0.88rem;
+        line-height: 1.45;
+      }
+
+      .status-line.is-ok {
+        color: var(--success);
+      }
+
+      .status-line.is-error {
+        color: var(--danger);
+      }
+
+      .repair-panel {
+        margin: 12px 0;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.54);
+      }
+
+      .repair-panel[hidden] {
+        display: none;
+      }
+
+      .repair-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      .repair-head h2 {
+        margin: 0;
+        font-size: 0.98rem;
+      }
+
+      .repair-head p {
+        margin: 3px 0 0;
+        color: var(--muted);
+        font-size: 0.84rem;
+      }
+
+      .repair-grid {
+        display: grid;
+        grid-template-columns: minmax(260px, 0.8fr) minmax(320px, 1.2fr);
+        gap: 10px;
+        align-items: stretch;
+      }
+
+      .repair-card {
+        display: grid;
+        gap: 8px;
+        align-content: start;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.56);
+      }
+
+      .repair-card strong {
+        color: var(--text);
+        font-size: 0.92rem;
+      }
+
+      .repair-card code {
+        padding: 5px 7px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.72);
+        color: var(--accent-strong);
+        overflow-wrap: anywhere;
+      }
+
+      .repair-card-wide {
+        grid-column: 1 / -1;
+      }
+
+      .compact-field input {
+        min-height: 36px;
+      }
+
+      .repair-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .manual-import {
+        margin: 0 0 8px;
+        padding: 7px 9px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.54);
+      }
+
+      .manual-import textarea {
+        min-height: 46px;
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+
+      .manual-import-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        margin-top: 6px;
+      }
+
+      .manual-file {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 28px;
+        padding: 4px 8px;
+        border: 1px dashed var(--line-strong);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.58);
+        color: var(--muted);
+        font-size: 0.8rem;
+        font-weight: 850;
+      }
+
+      .manual-file input {
+        display: none;
+      }
+
+      .manual-file.is-button {
+        cursor: pointer;
+        border-style: solid;
+        background: rgba(255, 255, 255, 0.78);
+        color: var(--text);
+      }
+
+      .repair-session {
+        min-height: 150px;
+        font-family: var(--mono);
+        font-size: 0.82rem;
+      }
+
+      .login-progress {
+        display: grid;
+        gap: 6px;
+      }
+
+      .login-progress[hidden] {
+        display: none;
+      }
+
+      .progress-track {
+        height: 8px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: rgba(47, 117, 255, 0.12);
+      }
+
+      .progress-track span {
+        display: block;
+        width: 0%;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #3c82ff, #08add8);
+        transition: width 180ms ease;
+      }
+
+      .progress-meta {
+        color: var(--muted);
+        font-size: 0.8rem;
+        font-weight: 800;
+      }
+
+      .job-log-list {
+        min-height: 250px;
+        max-height: 250px;
+        overflow: auto;
+        display: grid;
+        align-content: start;
+        gap: 7px;
+        padding-right: 3px;
+      }
+
+      .job-log-item {
+        display: grid;
+        grid-template-columns: auto auto minmax(0, 1fr);
+        gap: 8px;
+        align-items: start;
+        padding: 8px 9px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.68);
+        color: #415069;
+        font-size: 0.8rem;
+        line-height: 1.45;
+      }
+
+      .job-log-time,
+      .job-log-level {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.74rem;
+        font-weight: 800;
+      }
+
+      .job-log-level.success {
+        color: var(--success);
+      }
+
+      .job-log-level.warning {
+        color: var(--warning);
+      }
+
+      .job-log-level.error {
+        color: var(--danger);
+      }
+
+      @media (max-width: 960px) {
+        .topbar {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .topnav,
+        .actions {
+          justify-content: flex-start;
+        }
+
+        .proxy-row,
+        .warehouse-workspace,
+        .repair-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .config-grid {
+          grid-template-columns: minmax(210px, 1.2fr) minmax(160px, 0.9fr) 78px auto;
+        }
+      }
+
+      @media (max-width: 760px) {
+        .config-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+
+      @media (max-width: 620px) {
+        .app {
+          width: calc(100vw - 12px);
+          padding-top: 6px;
+        }
+
+        .topbar,
+        .module-tabs,
+        .panel-head,
+        .panel-body {
+          padding: 10px;
+        }
+
+        .brand {
+          gap: 10px;
+        }
+
+        .brand-mark {
+          width: 40px;
+          height: 40px;
+        }
+
+        .brand-copy strong {
+          font-size: 17px;
+        }
+
+        .brand-copy em {
+          font-size: 11px;
+          line-height: 1.45;
+        }
+
+        .topnav,
+        .actions,
+        .repair-actions,
+        .manual-import-actions,
+        .auto-row,
+        .auto-fields {
+          display: grid;
+          grid-template-columns: 1fr;
+          width: 100%;
+        }
+
+        .meta-chip,
+        .module-tab {
+          min-width: 0;
+          min-height: 30px;
+          padding: 5px 8px;
+          font-size: 12px;
+          white-space: nowrap;
+        }
+
+        .button {
+          width: 100%;
+        }
+
+        .summary {
+          grid-template-columns: 1fr;
+        }
+
+        .table-wrap table {
+          min-width: 620px;
+        }
+      }
+
+      .config-grid .form-field input {
+        height: 30px !important;
+        min-height: 28px !important;
+        padding: 4px 8px !important;
+        line-height: 1.2 !important;
+        box-sizing: border-box !important;
+      }
+
+      .config-grid .actions {
+        display: flex !important;
+        align-items: end;
+        flex-wrap: nowrap;
+        width: auto !important;
+      }
+
+      .manual-file input {
+        display: none !important;
+      }
+
+      .manual-file.is-button {
+        min-height: 28px !important;
+        padding: 4px 8px !important;
+      }
+    </style>
+    <link rel="stylesheet" href="/forge-theme.css?v=20260530-gpt-account-manager" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="GPT账号管理助手">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="23" height="23">
+              <path d="M12 3 3.5 7.4 12 12l8.5-4.6L12 3Z"></path>
+              <path d="m4 12 8 4.3 8-4.3"></path>
+              <path d="m4 16.5 8 4.3 8-4.3"></path>
+            </svg>
+          </span>
+          <span class="brand-copy">
+            <strong>GPT账号管理助手</strong>
+            <em>错误账号扫描 · 选中删除 · 本地保存</em>
+          </span>
+        </a>
+        <nav class="topnav" aria-label="顶部导航">
+          <a class="meta-chip" href="https://shop.ohlaoo.com/" target="_blank" rel="noreferrer">商城</a>
+          <a class="meta-chip" href="https://ohlaoo.com/" target="_blank" rel="noreferrer">中转站</a>
+          <a class="meta-chip" href="/public-pool" target="_blank" rel="noreferrer">公益站</a>
+          <a class="meta-chip github-link" href="https://github.com/margetrp-hub/gpt-account-manager" target="_blank" rel="noreferrer" aria-label="GitHub 开源项目">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M8 0C3.58 0 0 3.67 0 8.2c0 3.62 2.29 6.69 5.47 7.78.4.08.55-.18.55-.4 0-.2-.01-.84-.01-1.52-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.15-.28-.16-.68-.55-.01-.56.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.1-1.78-.21-3.64-.91-3.64-4.04 0-.89.31-1.62.82-2.19-.08-.21-.36-1.04.08-2.16 0 0 .67-.22 2.2.84A7.35 7.35 0 0 1 8 3.97c.68 0 1.36.09 2 .27 1.53-1.06 2.2-.84 2.2-.84.44 1.12.16 1.95.08 2.16.51.57.82 1.3.82 2.19 0 3.14-1.87 3.83-3.65 4.04.29.26.54.76.54 1.54 0 1.1-.01 1.99-.01 2.26 0 .22.15.48.55.4A8.08 8.08 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z"></path>
+            </svg>
+            GitHub
+          </a>
+        </nav>
+      </header>
+
+      <nav class="module-tabs" aria-label="功能导航">
+        <a class="module-tab" href="/">
+          <span>✉</span>
+          <strong>账号管理</strong>
+        </a>
+        <a class="module-tab" href="/refresh.html">
+          <span>▶</span>
+          <strong>凭证刷新</strong>
+        </a>
+        <a class="module-tab" href="/converter.html">
+          <span>⇄</span>
+          <strong>Session 转换</strong>
+        </a>
+        <a class="module-tab active" href="/warehouse.html" aria-current="page">
+          <span>↻</span>
+          <strong>CPA 仓管</strong>
+        </a>
+      </nav>
+
+      <section class="workspace">
+        <section class="panel" aria-labelledby="warehouse-title">
+          <div class="panel-head">
+            <div>
+              <h1 id="warehouse-title">CPA 错误账号仓管</h1>
+              <p>扫描 CPA/CLIProxyAPI 错误账号，选中后直接删除。地址和密钥只保存在当前浏览器 localStorage，不写入服务器文件。</p>
+            </div>
+            <span class="status-pill idle" id="connection-status">
+              <span class="status-dot"></span>
+              <span id="connection-text">未连接</span>
+            </span>
+          </div>
+          <div class="panel-body">
+            <div class="config-grid" aria-label="CPA 仓管配置">
+              <label class="form-field">
+                <span>CPA 地址</span>
+                <input id="base-url" type="text" value="http://localhost:8317" autocomplete="off" />
+              </label>
+              <label class="form-field">
+                <span>管理密钥</span>
+                <input id="management-key" type="password" autocomplete="off" />
+              </label>
+              <label class="form-field">
+                <span>单次上限</span>
+                <input id="max-items" type="number" min="1" max="50" value="20" />
+              </label>
+              <div class="actions compact-actions">
+                <button class="button button-secondary" id="scan-401" type="button">扫描错误账号</button>
+                <button class="button button-secondary" id="send-refresh-queue" type="button">加入凭证刷新</button>
+                <button class="button button-primary" id="delete-selected" type="button">删除选中</button>
+                <button class="button button-secondary subdued-action" id="repair-401" type="button" hidden>刷新并推送</button>
+              </div>
+            </div>
+
+            <details class="advanced-panel" hidden>
+              <summary>自动刷新与登录兜底暂不处理</summary>
+              <div class="auto-row">
+              <label class="toggle">
+                <input id="auto-toggle" type="checkbox" />
+                <span>自动刷新并推送</span>
+              </label>
+              <label class="auto-fields">
+                <span>间隔分钟</span>
+                <input id="auto-interval" type="number" min="1" max="1440" value="5" />
+              </label>
+              </div>
+
+              <div class="proxy-row">
+              <label class="toggle">
+                <input id="use-proxy" type="checkbox" />
+                <span>刷新登录使用代理</span>
+              </label>
+              <label class="form-field">
+                <span>代理 URL</span>
+                <input id="proxy-url" type="text" autocomplete="off" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" />
+              </label>
+              <input id="login-strategy" type="hidden" value="protocol" />
+              </div>
+            </details>
+
+            <div class="summary" aria-label="CPA 仓管统计">
+              <div class="stat">
+                <div class="stat-value" id="stat-total">0</div>
+                <div class="stat-label">扫描数量</div>
+              </div>
+              <div class="stat">
+                <div class="stat-value" id="stat-401">0</div>
+                <div class="stat-label">错误账号</div>
+              </div>
+              <div class="stat">
+                <div class="stat-value" id="stat-deleted">0</div>
+                <div class="stat-label">已删除</div>
+              </div>
+            </div>
+
+            <section class="repair-panel" id="repair-panel" hidden aria-label="单个 401 修复">
+              <div class="repair-head">
+                <div>
+                  <h2>单账号兜底授权</h2>
+                  <p>当前重点先做扫描和清理；不能稳定登录的账号先放着不处理。</p>
+                </div>
+                <button class="button button-ghost" id="close-repair" type="button">关闭</button>
+              </div>
+              <div class="repair-grid">
+                <div class="repair-card">
+                  <strong id="repair-title">未选择凭证</strong>
+                  <code id="repair-email">-</code>
+                  <label class="form-field compact-field">
+                    <span>OpenAI 登录密码</span>
+                    <input id="repair-login-password" type="password" autocomplete="current-password" placeholder="默认读取本地导入邮箱的第二段密码" />
+                  </label>
+                  <div class="repair-actions">
+                    <button class="button button-secondary" id="copy-repair-email" type="button">复制邮箱</button>
+                    <button class="button button-primary" id="start-auto-login" type="button">兜底登录</button>
+                    <button class="button button-secondary" id="fetch-repair-mail" type="button">收验证码</button>
+                    <button class="button button-secondary" id="open-chatgpt-login" type="button">打开登录</button>
+                  </div>
+                  <div class="status-line" id="repair-mail-status">验证码会从当前浏览器本地保存的邮箱凭证里读取。</div>
+                  <div class="login-progress" id="login-progress" hidden>
+                    <div class="progress-track"><span id="login-progress-bar"></span></div>
+                    <div class="progress-meta" id="login-progress-text">等待启动</div>
+                  </div>
+                </div>
+                <div class="repair-card">
+                  <strong>运行日志</strong>
+                  <div class="job-log-list" id="job-log-list">
+                    <div class="job-log-item">等待选择 401 凭证。</div>
+                  </div>
+                </div>
+                <div class="repair-card repair-card-wide">
+                  <strong>手动 Session 兜底</strong>
+                  <textarea class="repair-session" id="repair-session-json" spellcheck="false" placeholder='粘贴 https://chatgpt.com/api/auth/session 返回的 JSON'></textarea>
+                  <div class="repair-actions">
+                    <button class="button button-secondary" id="convert-repair-session" type="button">转换预览</button>
+                    <button class="button button-primary" id="replace-repair-auth" type="button">上传修复</button>
+                    <button class="button button-secondary" id="open-chatgpt-session" type="button">打开 Session</button>
+                  </div>
+                  <div class="status-line" id="repair-status">等待新的 Session JSON。</div>
+                </div>
+              </div>
+            </section>
+
+            <section class="manual-import" aria-label="手动导入 401 邮箱">
+              <label class="form-field">
+                <span>单独导入错误账号</span>
+                <textarea id="manual-401-input" spellcheck="false" placeholder="每行一个：邮箱----CPA文件名(可选)----OpenAI密码(可选)
+也支持 Outlook 四段：邮箱----密码----client_id----refresh_token
+临时邮箱：邮箱----JWT----分组(可选)"></textarea>
+              </label>
+              <div class="manual-import-actions">
+                <label class="manual-file is-button">
+                  <span>上传 TXT</span>
+                  <input id="manual-401-file" type="file" accept=".txt,text/plain" />
+                </label>
+                <button class="button button-secondary" id="import-manual-401" type="button">导入到列表</button>
+                <button class="button button-secondary" id="send-imported-refresh-queue" type="button">加入凭证刷新</button>
+                <button class="button button-primary" id="delete-imported-401" type="button">删除选中</button>
+                <button class="button button-secondary subdued-action" id="repair-selected-401" type="button" hidden>刷新列表并推送</button>
+                <button class="button button-secondary" id="export-cpa-json" type="button" hidden>导出 CPA JSON</button>
+                <button class="button button-secondary" id="export-sub2-json" type="button" hidden>导出 sub2 JSON</button>
+              </div>
+            </section>
+
+            <div class="warehouse-workspace">
+              <div class="table-wrap" aria-label="CPA 仓管结果">
+                <table>
+                  <colgroup>
+                    <col class="col-check" />
+                    <col class="col-name" />
+                    <col class="col-email" />
+                    <col class="col-action" />
+                    <col />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th><input id="select-all-rows" class="row-check" type="checkbox" aria-label="选择全部行" /></th>
+                      <th>名称</th>
+                      <th>邮箱</th>
+                      <th>动作</th>
+                      <th>状态</th>
+                    </tr>
+                  </thead>
+                  <tbody id="table-body">
+                    <tr>
+                    <td colspan="5" class="empty">暂无 CPA 扫描结果。</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <section class="log-panel" aria-label="CPA 仓管日志">
+                <h2>运行日志</h2>
+                <div class="log-list" id="log-list">
+                  <div class="log-item">等待扫描。</div>
+                </div>
+              </section>
+            </div>
+            <div class="status-line" id="status">CPA 地址和管理密钥只保存在当前浏览器 localStorage；扫描/删除时只随本次请求转发，不在本工具服务器落盘。</div>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script>
+      (() => {
+        const SETTINGS_KEY = "ctgptm-cpa-warehouse-settings";
+        const MAIL_ACCOUNTS_KEY = "ctgptm.mail.accounts";
+        const MAIL_MESSAGES_KEY = "ctgptm.mail.messages";
+        const REFRESH_QUEUE_KEY = "ctgptm.mail.refreshQueue";
+        const state = {
+          busy: false,
+          jobTimer: undefined,
+          lastJobStatus: "",
+          timer: undefined,
+          rows: [],
+          manualAccounts: [],
+          manualTempAddresses: [],
+          selectedRows: new Set(),
+          repairRow: undefined,
+          convertedAuth: undefined,
+        };
+
+        const elements = {
+          autoInterval: document.querySelector("#auto-interval"),
+          autoToggle: document.querySelector("#auto-toggle"),
+          baseUrl: document.querySelector("#base-url"),
+          connectionStatus: document.querySelector("#connection-status"),
+          connectionText: document.querySelector("#connection-text"),
+          logList: document.querySelector("#log-list"),
+          managementKey: document.querySelector("#management-key"),
+          maxItems: document.querySelector("#max-items"),
+          useProxy: document.querySelector("#use-proxy"),
+          proxyUrl: document.querySelector("#proxy-url"),
+          loginStrategy: document.querySelector("#login-strategy"),
+          manual401Input: document.querySelector("#manual-401-input"),
+          manual401File: document.querySelector("#manual-401-file"),
+          importManual401: document.querySelector("#import-manual-401"),
+          repairSelected401: document.querySelector("#repair-selected-401"),
+          sendRefreshQueue: document.querySelector("#send-refresh-queue"),
+          sendImportedRefreshQueue: document.querySelector("#send-imported-refresh-queue"),
+          deleteImported401: document.querySelector("#delete-imported-401"),
+          deleteSelected: document.querySelector("#delete-selected"),
+          exportCpaJson: document.querySelector("#export-cpa-json"),
+          exportSub2Json: document.querySelector("#export-sub2-json"),
+          selectAllRows: document.querySelector("#select-all-rows"),
+          repair401: document.querySelector("#repair-401"),
+          closeRepair: document.querySelector("#close-repair"),
+          convertRepairSession: document.querySelector("#convert-repair-session"),
+          copyRepairEmail: document.querySelector("#copy-repair-email"),
+          fetchRepairMail: document.querySelector("#fetch-repair-mail"),
+          jobLogList: document.querySelector("#job-log-list"),
+          loginProgress: document.querySelector("#login-progress"),
+          loginProgressBar: document.querySelector("#login-progress-bar"),
+          loginProgressText: document.querySelector("#login-progress-text"),
+          openChatgptLogin: document.querySelector("#open-chatgpt-login"),
+          openChatgptSession: document.querySelector("#open-chatgpt-session"),
+          repairEmail: document.querySelector("#repair-email"),
+          repairLoginPassword: document.querySelector("#repair-login-password"),
+          repairMailStatus: document.querySelector("#repair-mail-status"),
+          repairPanel: document.querySelector("#repair-panel"),
+          repairSessionJson: document.querySelector("#repair-session-json"),
+          repairStatus: document.querySelector("#repair-status"),
+          repairTitle: document.querySelector("#repair-title"),
+          replaceRepairAuth: document.querySelector("#replace-repair-auth"),
+          scan401: document.querySelector("#scan-401"),
+          startAutoLogin: document.querySelector("#start-auto-login"),
+          stat401: document.querySelector("#stat-401"),
+          statDeleted: document.querySelector("#stat-deleted"),
+          statTotal: document.querySelector("#stat-total"),
+          status: document.querySelector("#status"),
+          tableBody: document.querySelector("#table-body"),
+        };
+
+        function escapeHtml(value) {
+          return String(value ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+        }
+
+        function setStatus(element, text, mode = "") {
+          element.textContent = text;
+          element.classList.toggle("is-ok", mode === "ok");
+          element.classList.toggle("is-error", mode === "error");
+        }
+
+        function setButtonBusy(button, busy, label) {
+          if (busy) {
+            button.dataset.originalText = button.textContent;
+            button.textContent = label || "处理中...";
+            button.disabled = true;
+            return;
+          }
+          button.disabled = false;
+          if (button.dataset.originalText) {
+            button.textContent = button.dataset.originalText;
+            delete button.dataset.originalText;
+          }
+        }
+
+        function setConnection(stateName, text) {
+          elements.connectionStatus.className = `status-pill ${stateName || "idle"}`;
+          elements.connectionText.textContent = text || "未连接";
+        }
+
+        function loadJson(key, fallback) {
+          try {
+            const raw = localStorage.getItem(key);
+            return raw ? JSON.parse(raw) : fallback;
+          } catch {
+            return fallback;
+          }
+        }
+
+        function firstNonEmpty(...values) {
+          for (const value of values) {
+            if (value !== undefined && value !== null && String(value).trim()) {
+              return String(value).trim();
+            }
+          }
+          return "";
+        }
+
+        function compactObject(value) {
+          return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== null && item !== ""));
+        }
+
+        function rowKey(row) {
+          return [
+            row.source_kind || row.source || "cpa",
+            String(row.name || row.id || row.cpa_name || "").toLowerCase(),
+            String(row.email || row.account || "").toLowerCase(),
+            String(row.auth_index || ""),
+          ].join("|");
+        }
+
+        function parseCredentialLine(line, index) {
+          const clean = line.trim().replace(/^\ufeff/, "");
+          if (!clean || clean.startsWith("#")) return null;
+          const parts = clean.includes("----")
+            ? clean.split("----").map((part) => part.trim())
+            : clean.split(",").map((part) => part.trim());
+          const email = parts[0] || "";
+          if (!email.includes("@")) {
+            throw new Error(`第 ${index + 1} 行邮箱格式不对`);
+          }
+          const isMicrosoft = parts.length >= 4 && parts[2] && parts[3];
+          if (isMicrosoft) {
+            return {
+              row: {
+                name: email,
+                email,
+                password: parts[1] || "",
+                action: "401",
+                status_code: 401,
+                ok: false,
+                message: "手动导入 Outlook 异常账号",
+                manual: true,
+                runtime_only: true,
+              },
+              account: {
+                email,
+                password: parts[1] || "",
+                client_id: parts[2] || "",
+                refresh_token: parts[3] || "",
+                category: parts[4] || "",
+              },
+            };
+          }
+          const second = parts[1] || "";
+          const looksLikeJwt = second.split(".").length >= 2 || second.length > 80 || /^eyJ/i.test(second);
+          if (looksLikeJwt) {
+            return {
+              row: {
+                name: email,
+                email,
+                action: "401",
+                status_code: 401,
+                ok: false,
+                message: "手动导入临时邮箱异常账号",
+                manual: true,
+                runtime_only: true,
+              },
+              tempAddress: {
+                email,
+                jwt: second,
+                category: parts[2] || "",
+              },
+            };
+          }
+          return {
+            row: {
+              name: parts[1] || email,
+              email,
+              password: parts[2] || "",
+              action: "401",
+              status_code: 401,
+              ok: false,
+              message: "手动导入 401",
+              manual: true,
+              runtime_only: true,
+            },
+          };
+        }
+
+        function tryParseJwtPayload(token) {
+          try {
+            const part = String(token || "").split(".")[1];
+            if (!part) return {};
+            const normalized = part.replace(/-/g, "+").replace(/_/g, "/");
+            const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+            return JSON.parse(atob(padded));
+          } catch {
+            return {};
+          }
+        }
+
+        function normalizeTimestamp(value) {
+          if (!value) return "";
+          const date = value instanceof Date ? value : new Date(value);
+          return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+        }
+
+        function epochSecondsFromValue(value) {
+          if (value === undefined || value === null || value === "") return undefined;
+          const numeric = Number(value);
+          if (Number.isFinite(numeric)) {
+            return Math.trunc(numeric > 1e11 ? numeric / 1000 : numeric);
+          }
+          const parsed = Date.parse(String(value));
+          return Number.isFinite(parsed) ? Math.trunc(parsed / 1000) : undefined;
+        }
+
+        function buildSyntheticIdToken(email, accountId, planType, expiresAt) {
+          const encode = (value) => btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+          const now = Math.floor(Date.now() / 1000);
+          const exp = expiresAt ? Math.floor(new Date(expiresAt).getTime() / 1000) : now + 3600;
+          return `${encode({ alg: "none", typ: "JWT", cpa_synthetic: true })}.${encode({
+            iss: "gpt-account-manager",
+            aud: "chatgpt",
+            email,
+            chatgpt_account_id: accountId,
+            account_id: accountId,
+            chatgpt_plan_type: planType,
+            iat: now,
+            exp: Number.isFinite(exp) ? exp : now + 3600,
+          })}.synthetic`;
+        }
+
+        function sessionToCpaAuth(session) {
+          const accessToken = firstNonEmpty(
+            session.accessToken,
+            session.access_token,
+            session.tokens?.accessToken,
+            session.tokens?.access_token,
+            session.token?.accessToken,
+            session.token?.access_token,
+            session.credentials?.access_token,
+          );
+          if (!accessToken) {
+            throw new Error("Session JSON 缺少 accessToken");
+          }
+          const sessionToken = firstNonEmpty(session.sessionToken, session.session_token, session.tokens?.sessionToken, session.tokens?.session_token);
+          const refreshToken = firstNonEmpty(session.refreshToken, session.refresh_token, session.tokens?.refreshToken, session.tokens?.refresh_token);
+          const inputIdToken = firstNonEmpty(session.idToken, session.id_token, session.tokens?.idToken, session.tokens?.id_token);
+          const payload = tryParseJwtPayload(accessToken);
+          const idPayload = tryParseJwtPayload(inputIdToken);
+          const auth = payload?.["https://api.openai.com/auth"] || {};
+          const idAuth = idPayload?.["https://api.openai.com/auth"] || {};
+          const profile = payload?.["https://api.openai.com/profile"] || {};
+          const email = firstNonEmpty(
+            session.user?.email,
+            session.email,
+            session.credentials?.email,
+            profile.email,
+            idPayload.email,
+            payload.email,
+            state.repairRow?.email,
+          );
+          const accountId = firstNonEmpty(
+            session.account?.id,
+            session.account_id,
+            session.chatgptAccountId,
+            session.chatgpt_account_id,
+            auth.chatgpt_account_id,
+            idAuth.chatgpt_account_id,
+            state.repairRow?.auth_index,
+          );
+          const planType = firstNonEmpty(session.account?.planType, session.planType, session.plan_type, auth.chatgpt_plan_type, idAuth.chatgpt_plan_type);
+          const expiresAt = firstNonEmpty(
+            payload.exp ? normalizeTimestamp(payload.exp * 1000) : "",
+            normalizeTimestamp(session.expires),
+            normalizeTimestamp(session.expiresAt),
+            normalizeTimestamp(session.expires_at),
+          );
+          const idToken = firstNonEmpty(inputIdToken, buildSyntheticIdToken(email, accountId, planType, expiresAt));
+          return Object.fromEntries(Object.entries({
+            type: "codex",
+            account_id: accountId,
+            chatgpt_account_id: accountId,
+            email,
+            name: firstNonEmpty(email, state.repairRow?.name, "ChatGPT Account"),
+            plan_type: planType,
+            chatgpt_plan_type: planType,
+            id_token: idToken,
+            id_token_synthetic: inputIdToken ? undefined : true,
+            access_token: accessToken,
+            refresh_token: refreshToken || "",
+            session_token: sessionToken,
+            last_refresh: normalizeTimestamp(new Date()),
+            expired: expiresAt,
+          }).filter(([, value]) => value !== undefined && value !== null && value !== ""));
+        }
+
+        function addLog(message, type = "info") {
+          const item = document.createElement("div");
+          item.className = `log-item ${type}`;
+          item.textContent = `${new Date().toLocaleTimeString()} · ${message}`;
+          if (elements.logList.firstElementChild?.textContent === "等待扫描。") {
+            elements.logList.innerHTML = "";
+          }
+          elements.logList.prepend(item);
+          while (elements.logList.children.length > 120) {
+            elements.logList.lastElementChild.remove();
+          }
+        }
+
+        function addJobLog(message, type = "info") {
+          if (elements.jobLogList.firstElementChild?.textContent === "等待选择 401 凭证。") {
+            elements.jobLogList.innerHTML = "";
+          }
+          const item = document.createElement("div");
+          item.className = "job-log-item";
+          item.innerHTML = `
+            <span class="job-log-time">${escapeHtml(new Date().toLocaleTimeString())}</span>
+            <span class="job-log-level ${escapeHtml(type)}">${escapeHtml(type.toUpperCase())}</span>
+            <span>${escapeHtml(message)}</span>
+          `;
+          elements.jobLogList.prepend(item);
+          while (elements.jobLogList.children.length > 160) {
+            elements.jobLogList.lastElementChild.remove();
+          }
+        }
+
+        function renderJobLogs(logs = []) {
+          if (!logs.length) return;
+          elements.jobLogList.innerHTML = logs.slice().reverse().map((entry) => {
+            const time = entry.time ? new Date(entry.time).toLocaleTimeString() : new Date().toLocaleTimeString();
+            const level = entry.level || "info";
+            return `
+              <div class="job-log-item">
+                <span class="job-log-time">${escapeHtml(time)}</span>
+                <span class="job-log-level ${escapeHtml(level)}">${escapeHtml(level.toUpperCase())}</span>
+                <span>${escapeHtml(entry.message || "")}</span>
+              </div>
+            `;
+          }).join("");
+        }
+
+        function setLoginProgress(status, text) {
+          const percent = {
+            queued: 8,
+            running: 42,
+            success: 100,
+            failed: 100,
+          }[status] ?? 0;
+          elements.loginProgress.hidden = false;
+          elements.loginProgressBar.style.width = `${percent}%`;
+          elements.loginProgressText.textContent = text || status || "等待启动";
+        }
+
+        function loadSettings() {
+          let settings = {};
+          try {
+            settings = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+          } catch {
+            settings = {};
+          }
+          elements.baseUrl.value = settings.baseUrl || elements.baseUrl.value || "http://localhost:8317";
+          elements.managementKey.value = settings.managementKey || "";
+          elements.maxItems.value = settings.maxItems || "20";
+          elements.autoInterval.value = settings.autoInterval || "5";
+          elements.autoToggle.checked = false;
+          elements.useProxy.checked = false;
+          elements.proxyUrl.value = "";
+          if (elements.loginStrategy) elements.loginStrategy.value = "protocol";
+        }
+
+        function saveSettings() {
+          const settings = {
+            baseUrl: elements.baseUrl.value.trim(),
+            managementKey: elements.managementKey.value.trim(),
+            maxItems: elements.maxItems.value || "20",
+            autoInterval: elements.autoInterval.value || "5",
+            autoEnabled: false,
+            useProxy: false,
+            proxyUrl: "",
+            loginStrategy: "protocol",
+          };
+          localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+        }
+
+        function getPayload() {
+          const localAccounts = loadJson(MAIL_ACCOUNTS_KEY, []);
+          return {
+            base_url: elements.baseUrl.value.trim() || "http://localhost:8317",
+            management_key: elements.managementKey.value.trim(),
+            max_items: Number.parseInt(elements.maxItems.value, 10) || 20,
+            use_proxy: elements.useProxy.checked,
+            proxy_url: elements.proxyUrl.value.trim(),
+            login_strategy: "protocol",
+            accounts: localAccounts.filter((account) => account.source === "microsoft").map((account) => ({
+              email: account.email,
+              password: account.password,
+              client_id: account.client_id,
+              refresh_token: account.refresh_token,
+              category: account.category,
+            })).concat(state.manualAccounts),
+            temp_addresses: localAccounts.filter((account) => account.source === "temp").map((account) => ({
+              email: account.email,
+              jwt: account.jwt,
+              category: account.category,
+            })).concat(state.manualTempAddresses),
+          };
+        }
+
+        function validatePayload(payload) {
+          if (!payload.base_url) {
+            setStatus(elements.status, "请填写 CPA 地址。", "error");
+            return false;
+          }
+          if (!payload.management_key) {
+            setStatus(elements.status, "请填写 CPA 管理密钥。", "error");
+            return false;
+          }
+          if (payload.use_proxy && !payload.proxy_url) {
+            setStatus(elements.status, "已勾选代理时，请填写 http/socks5 代理 URL。", "error");
+            return false;
+          }
+          return true;
+        }
+
+        function updateStats(summary = {}) {
+          elements.statTotal.textContent = String(summary.total ?? 0);
+          elements.stat401.textContent = String(summary.candidates ?? summary.invalid ?? summary.processed ?? 0);
+          elements.statDeleted.textContent = String(summary.deleted ?? summary.uploaded ?? 0);
+        }
+
+        function formatAction(action) {
+          const labels = {
+            "401": "401",
+            ready: "正常",
+            scanned: "已扫描",
+            skipped: "跳过",
+            probe_failed: "探测失败",
+            deleted_deactivated: "已清理",
+            deleted: "已删除",
+            delete_failed: "清理失败",
+            replaced: "已上传",
+            uploaded: "已推送",
+            active: "可用",
+            refreshed: "已刷新",
+            rt_rotated: "RT 已轮换",
+            rt_invalid: "RT 失效",
+            session_expired: "会话失效",
+            banned: "封禁/停用",
+            risk_blocked: "风控受限",
+            usage_limit_reached: "额度耗尽",
+            needs_login: "需重新授权",
+            login_failed: "登录失败",
+            login_started: "授权中",
+          };
+          return labels[action] || action || "-";
+        }
+
+        function parseNestedJsonValue(value, depth = 4) {
+          let current = value;
+          for (let index = 0; index < depth; index += 1) {
+            if (typeof current !== "string") break;
+            const text = current.trim();
+            if (!text || !"{[\"".includes(text[0])) break;
+            try {
+              current = JSON.parse(text);
+            } catch {
+              break;
+            }
+          }
+          return current;
+        }
+
+        function collectNestedErrorTexts(value, texts = [], depth = 0) {
+          if (depth > 6 || texts.length >= 12) return texts;
+          const current = parseNestedJsonValue(value);
+          if (current && typeof current === "object" && !Array.isArray(current)) {
+            const priority = ["detail", "message", "error_description", "error", "status", "body", "raw"];
+            for (const key of priority) {
+              if (Object.prototype.hasOwnProperty.call(current, key)) {
+                collectNestedErrorTexts(current[key], texts, depth + 1);
+              }
+            }
+            for (const [key, item] of Object.entries(current)) {
+              if (!priority.includes(key)) {
+                collectNestedErrorTexts(item, texts, depth + 1);
+              }
+            }
+            return texts;
+          }
+          if (Array.isArray(current)) {
+            current.slice(0, 8).forEach((item) => collectNestedErrorTexts(item, texts, depth + 1));
+            return texts;
+          }
+          const text = String(current ?? "").trim();
+          if (text && !texts.includes(text)) texts.push(text);
+          return texts;
+        }
+
+        function humanizeStatusMessage(value, row = {}) {
+          const texts = collectNestedErrorTexts(value);
+          const raw = firstNonEmpty(...texts, value, row.raw_message, row.error);
+          const haystack = [...texts, row.status_code, row.action, row.status].map((item) => String(item ?? "").toLowerCase()).join(" ");
+          const statusCode = String(row.status_code || "").trim();
+          if (String(row.action || "") === "skipped" || haystack.includes("missing auth_index")) {
+            return { text: "缺少 auth_index，无法探测", raw };
+          }
+          if (haystack.includes("access deactivated") || haystack.includes("account deactivated") || haystack.includes("deactivated")) {
+            return { text: "Access Deactivated：账号已停用/封禁", raw };
+          }
+          if (haystack.includes("unusual") || haystack.includes("risk") || haystack.includes("suspicious")) {
+            return { text: "触发风控/异常活动，先暂放", raw };
+          }
+          if (statusCode === "401" || /\b401\b/.test(haystack) || haystack.includes("unauthorized")) {
+            return { text: "授权已失效，需要重新登录", raw };
+          }
+          if (statusCode === "403" || haystack.includes("forbidden")) {
+            return { text: "CPA 拒绝访问，检查管理密钥或权限", raw };
+          }
+          if (statusCode === "422" || haystack.includes("unprocessable entity")) {
+            return { text: "CPA 请求参数不完整或格式不对", raw };
+          }
+          if (haystack.includes("temporary failure in name resolution") || haystack.includes("name or service not known") || haystack.includes("getaddrinfo")) {
+            return { text: "域名解析失败，检查服务器 DNS 或 CPA 地址", raw };
+          }
+          if (haystack.includes("connection refused")) {
+            return { text: "CPA 接口连接被拒绝，检查地址和端口", raw };
+          }
+          if (haystack.includes("network unreachable")) {
+            return { text: "网络不可达，检查 VPS 网络或代理", raw };
+          }
+          if (haystack.includes("timed out") || haystack.includes("timeout")) {
+            return { text: "CPA 请求超时", raw };
+          }
+          if (haystack.includes("missing status_code")) {
+            return { text: "CPA 探测没有返回状态码", raw };
+          }
+          if (statusCode) {
+            return { text: `HTTP ${statusCode}`, raw };
+          }
+          return { text: raw || "-", raw };
+        }
+
+        function refreshQueueKey(row) {
+          return String(row.email || row.account || row.name || row.id || row.auth_index || "").toLowerCase();
+        }
+
+        function rowLifecycleStatus(row, rawStatus = "") {
+          const email = firstNonEmpty(row.email, row.account);
+          const text = `${rawStatus} ${row.message || ""} ${row.error || ""} ${row.action || ""}`.toLowerCase();
+          if (text.includes("access deactivated") || text.includes("deactivated") || text.includes("banned") || text.includes("suspended")) {
+            return { label: "已封禁", tone: "bad", detail: "账号已停用/封禁，建议直接删除 CPA 凭证" };
+          }
+          const queued = loadJson(REFRESH_QUEUE_KEY, []).some((item) => refreshQueueKey(item) === refreshQueueKey(row));
+          if (queued) {
+            return { label: "已入刷新", tone: "queued", detail: "已加入凭证刷新队列" };
+          }
+          if (!email) {
+            return { label: "缺邮箱", tone: "warn", detail: "CPA 行缺少邮箱，无法自动登录刷新" };
+          }
+          const localAccounts = findLocalAccounts(email);
+          if (!localAccounts.length) {
+            return { label: "缺取件", tone: "warn", detail: "本地没有这个邮箱的取件凭证" };
+          }
+          const hasPassword = localAccounts.some((account) => String(account.password || "").trim());
+          if (!hasPassword) {
+            return { label: "缺密码", tone: "warn", detail: "本地有取件凭证，但没有 OpenAI 登录密码" };
+          }
+          return { label: "可刷新", tone: "ready", detail: "本地邮箱和密码可用于凭证刷新" };
+        }
+
+        function renderRows(rows) {
+          state.rows = Array.isArray(rows) ? rows : [];
+          state.rows.forEach((row) => state.selectedRows.add(rowKey(row)));
+          for (const selected of [...state.selectedRows]) {
+            if (!state.rows.some((row) => rowKey(row) === selected)) {
+              state.selectedRows.delete(selected);
+            }
+          }
+          elements.selectAllRows.checked = state.rows.length > 0 && state.rows.every((row) => state.selectedRows.has(rowKey(row)));
+          if (!rows || rows.length === 0) {
+              elements.tableBody.innerHTML = '<tr><td colspan="5" class="empty">没有需要处理的 401 凭证。</td></tr>';
+            return;
+          }
+          elements.tableBody.innerHTML = rows.map((row, index) => {
+            const okClass = row.ok === true ? "ok" : row.ok === false ? "bad" : "";
+            const statusInfo = humanizeStatusMessage(firstNonEmpty(row.message, row.error, row.status_message), row);
+            const status = statusInfo.text;
+            const rawStatus = statusInfo.raw || status;
+            const lifecycle = rowLifecycleStatus(row, rawStatus);
+            const key = rowKey(row);
+            return `
+              <tr data-key="${escapeHtml(key)}">
+                <td><input class="row-check result-check" type="checkbox" data-index="${index}" ${state.selectedRows.has(key) ? "checked" : ""} aria-label="选择 ${escapeHtml(row.email || row.account || row.name || "当前行")}" /></td>
+                <td><div class="cell-clip" title="${escapeHtml(row.name || "")}">${escapeHtml(row.name || "-")}</div></td>
+                <td><div class="cell-clip" title="${escapeHtml(row.email || row.account || "")}">${escapeHtml(row.email || row.account || "-")}</div></td>
+                <td><span class="status-tag ${escapeHtml(lifecycle.tone)}" title="${escapeHtml(lifecycle.detail)}">${escapeHtml(lifecycle.label)}</span></td>
+                <td class="${okClass}"><div class="cell-clip" title="${escapeHtml(rawStatus)}">${escapeHtml(status)}</div></td>
+              </tr>
+            `;
+          }).join("");
+        }
+
+        function openRepair(row) {
+          state.repairRow = row;
+          state.convertedAuth = undefined;
+          state.lastJobStatus = "";
+          if (state.jobTimer) {
+            clearInterval(state.jobTimer);
+            state.jobTimer = undefined;
+          }
+          const email = row.email || row.account || "";
+          const localAccount = findLocalAccounts(email)[0];
+          elements.repairTitle.textContent = row.name || "401 凭证";
+          elements.repairEmail.textContent = email || "-";
+          elements.repairLoginPassword.value = localAccount?.password || "";
+          elements.repairSessionJson.value = "";
+          elements.jobLogList.innerHTML = '<div class="job-log-item">等待启动兜底授权。</div>';
+          elements.loginProgress.hidden = true;
+          elements.loginProgressBar.style.width = "0%";
+          elements.loginProgressText.textContent = "等待启动";
+          setStatus(elements.repairMailStatus, "验证码会从当前浏览器本地保存的邮箱凭证里读取。");
+          setStatus(elements.repairStatus, "等待新的 Session JSON。");
+          elements.repairPanel.hidden = false;
+          elements.repairPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+
+        function closeRepair() {
+          elements.repairPanel.hidden = true;
+          state.repairRow = undefined;
+          state.convertedAuth = undefined;
+          state.lastJobStatus = "";
+          if (state.jobTimer) {
+            clearInterval(state.jobTimer);
+            state.jobTimer = undefined;
+          }
+        }
+
+        async function copyText(text, statusElement, okMessage) {
+          if (!text) return;
+          await navigator.clipboard.writeText(text);
+          setStatus(statusElement, okMessage, "ok");
+        }
+
+        function findLocalAccounts(email) {
+          const accounts = loadJson(MAIL_ACCOUNTS_KEY, []);
+          return accounts.concat(state.manualAccounts, state.manualTempAddresses)
+            .filter((account) => String(account.email || "").toLowerCase() === String(email || "").toLowerCase());
+        }
+
+        function parseManual401Rows(text) {
+          const parsed = String(text || "").split(/\r?\n/)
+            .map((line, index) => parseCredentialLine(line, index))
+            .filter(Boolean);
+          return {
+            rows: parsed.map((item) => item.row),
+            accounts: parsed.map((item) => item.account).filter(Boolean),
+            tempAddresses: parsed.map((item) => item.tempAddress).filter(Boolean),
+          };
+        }
+
+        function importManual401Rows() {
+          try {
+            const { rows, accounts, tempAddresses } = parseManual401Rows(elements.manual401Input.value);
+            if (!rows.length) {
+              setStatus(elements.status, "先粘贴 401 邮箱信息。", "error");
+              return;
+            }
+            const mergeByEmail = (current, incoming) => {
+              const byEmail = new Map(current.map((item) => [String(item.email || "").toLowerCase(), item]));
+              incoming.forEach((item) => byEmail.set(String(item.email || "").toLowerCase(), item));
+              return [...byEmail.values()];
+            };
+            state.manualAccounts = mergeByEmail(state.manualAccounts, accounts);
+            state.manualTempAddresses = mergeByEmail(state.manualTempAddresses, tempAddresses);
+            const byKey = new Map(state.rows.map((row) => [rowKey(row), row]));
+            rows.forEach((row) => byKey.set(rowKey(row), row));
+            renderRows([...byKey.values()]);
+            updateStats({ total: state.rows.length, candidates: state.rows.length, uploaded: 0 });
+            setStatus(elements.status, `已导入 ${rows.length} 个异常账号，取件凭证 ${accounts.length + tempAddresses.length} 个。`, "ok");
+            addLog(`手动导入 ${rows.length} 个异常账号`, "success");
+          } catch (error) {
+            setStatus(elements.status, error instanceof Error ? error.message : "导入失败", "error");
+          }
+        }
+
+        async function importManual401File() {
+          const file = elements.manual401File.files?.[0];
+          if (!file) return;
+          if (!/\.txt$/i.test(file.name) && file.type && !file.type.startsWith("text/")) {
+            setStatus(elements.status, "请上传 TXT 文本文件。", "error");
+            elements.manual401File.value = "";
+            return;
+          }
+          try {
+            elements.manual401Input.value = await file.text();
+            setStatus(elements.status, `已读取 ${file.name}，点击“导入到列表”后生效。`, "ok");
+          } catch (error) {
+            setStatus(elements.status, error instanceof Error ? error.message : "读取 TXT 失败", "error");
+          }
+        }
+
+        async function fetchRepairMail() {
+          const email = state.repairRow?.email || state.repairRow?.account || "";
+          if (!email) {
+            setStatus(elements.repairMailStatus, "当前 401 凭证没有邮箱，无法自动收验证码。", "error");
+            return;
+          }
+          const accounts = findLocalAccounts(email);
+          if (!accounts.length) {
+            setStatus(elements.repairMailStatus, "本地账号管理页里没有这个邮箱，请先在账号管理页导入。", "error");
+            return;
+          }
+          setButtonBusy(elements.fetchRepairMail, true, "收取中...");
+          try {
+            const tempAddresses = accounts.filter((account) => account.source === "temp").map((account) => ({
+              email: account.email,
+              jwt: account.jwt,
+              category: account.category,
+            })).concat(state.manualTempAddresses.filter((account) => String(account.email || "").toLowerCase() === email.toLowerCase()));
+            const microsoftAccounts = accounts.filter((account) => account.source === "microsoft").map((account) => ({
+              email: account.email,
+              password: account.password,
+              client_id: account.client_id,
+              refresh_token: account.refresh_token,
+              category: account.category,
+            })).concat(state.manualAccounts.filter((account) => String(account.email || "").toLowerCase() === email.toLowerCase()));
+            const response = await fetch("/client-api/fetch", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                source: "all",
+                provider: "auto",
+                sender_filter: "",
+                limit: 20,
+                temp_addresses: tempAddresses,
+                accounts: microsoftAccounts,
+              }),
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || "收取验证码失败");
+            const messages = data.messages || [];
+            const oldMessages = loadJson(MAIL_MESSAGES_KEY, []);
+            const byKey = new Map(oldMessages.map((message) => [
+              `${message.source}|${message.account}|${message.folder}|${message.mid}|${message.subject}|${message.received_at}`,
+              message,
+            ]));
+            messages.forEach((message) => {
+              byKey.set(`${message.source}|${message.account}|${message.folder}|${message.mid}|${message.subject}|${message.received_at}`, message);
+            });
+            localStorage.setItem(MAIL_MESSAGES_KEY, JSON.stringify([...byKey.values()]));
+            const code = messages.flatMap((message) => message.codes || [])[0];
+            if (code) {
+              await navigator.clipboard.writeText(code);
+              setStatus(elements.repairMailStatus, `已收取并复制验证码：${code}`, "ok");
+              addJobLog(`已收取验证码：${code}`, "success");
+              return;
+            }
+            setStatus(elements.repairMailStatus, `已收取 ${messages.length} 封邮件，但没有识别到验证码。`, messages.length ? "ok" : "error");
+          } catch (error) {
+            setStatus(elements.repairMailStatus, error instanceof Error ? error.message : "收取验证码失败", "error");
+          } finally {
+            setButtonBusy(elements.fetchRepairMail, false);
+          }
+        }
+
+        function convertRepairSession() {
+          try {
+            const session = JSON.parse(elements.repairSessionJson.value || "{}");
+            state.convertedAuth = sessionToCpaAuth(session);
+            setStatus(elements.repairStatus, `已转换：${state.convertedAuth.email || state.convertedAuth.name || "ChatGPT Account"}`, "ok");
+            return state.convertedAuth;
+          } catch (error) {
+            state.convertedAuth = undefined;
+            setStatus(elements.repairStatus, error instanceof Error ? error.message : "Session JSON 解析失败", "error");
+            return undefined;
+          }
+        }
+
+        async function replaceRepairAuth() {
+          const authFile = state.convertedAuth || convertRepairSession();
+          if (!authFile || !state.repairRow) return;
+          const payload = getPayload();
+          if (!validatePayload(payload)) return;
+          setButtonBusy(elements.replaceRepairAuth, true, "上传中...");
+          try {
+            const response = await fetch("/client-api/cpa/replace-auth", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                ...payload,
+                name: state.repairRow.name || authFile.email,
+                auth_file: authFile,
+              }),
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) throw new Error(data.error || "上传修复失败");
+            setStatus(elements.repairStatus, "已上传新的 auth file。建议再点扫描确认。", "ok");
+            addLog(`已上传修复：${data.result?.name || authFile.email || state.repairRow.name}`, "success");
+          } catch (error) {
+            setStatus(elements.repairStatus, error instanceof Error ? error.message : "上传修复失败", "error");
+          } finally {
+            setButtonBusy(elements.replaceRepairAuth, false);
+          }
+        }
+
+        function buildLoginPayload() {
+          if (!state.repairRow) return undefined;
+          const email = state.repairRow.email || state.repairRow.account || "";
+          const accounts = findLocalAccounts(email);
+          const password = elements.repairLoginPassword.value.trim() || accounts.find((account) => account.password)?.password || "";
+          const tempAddresses = accounts.filter((account) => account.source === "temp").map((account) => ({
+            email: account.email,
+            jwt: account.jwt,
+            category: account.category,
+          })).concat(state.manualTempAddresses.filter((account) => String(account.email || "").toLowerCase() === email.toLowerCase()));
+          const microsoftAccounts = accounts.filter((account) => account.source === "microsoft").map((account) => ({
+            email: account.email,
+            password: account.password,
+            client_id: account.client_id,
+            refresh_token: account.refresh_token,
+            category: account.category,
+          })).concat(state.manualAccounts.filter((account) => String(account.email || "").toLowerCase() === email.toLowerCase()));
+          return {
+            ...getPayload(),
+            row: state.repairRow,
+            name: state.repairRow.name || email,
+            email,
+            password,
+            temp_addresses: tempAddresses,
+            accounts: microsoftAccounts,
+          };
+        }
+
+        function selectedResultRows({ requireAuth = false } = {}) {
+          const selected = state.rows.filter((row) => state.selectedRows.has(rowKey(row)));
+          const base = selected.length ? selected : state.rows;
+          return requireAuth ? base.filter((row) => row.auth_file && typeof row.auth_file === "object") : base;
+        }
+
+        function warehouseRowToRefreshQueue(row) {
+          const email = firstNonEmpty(row.email, row.account);
+          const name = firstNonEmpty(row.name, row.id, row.cpa_name, email);
+          const key = refreshQueueKey(row);
+          return compactObject({
+            id: `cpa-refresh:${key || crypto.randomUUID()}`,
+            source_kind: "cpa",
+            source: "cpa",
+            service: "CPA",
+            email,
+            name,
+            cpa_name: firstNonEmpty(row.name, row.id, row.cpa_name),
+            auth_index: row.auth_index || "",
+            account_id: row.account_id || "",
+            status: "idle",
+            error: "",
+            logs: [],
+            cpa_base_url: elements.baseUrl.value.trim(),
+            cpa_management_key: elements.managementKey.value,
+            use_proxy: elements.useProxy.checked,
+            proxy_url: elements.proxyUrl.value.trim(),
+            login_strategy: "protocol",
+          });
+        }
+
+        function sendSelectedToRefreshQueue({ jump = true } = {}) {
+          const rows = selectedResultRows().filter((row) => firstNonEmpty(row.email, row.account, row.name, row.id));
+          if (!rows.length) {
+            setStatus(elements.status, "先扫描或导入要刷新的错误账号。", "error");
+            return;
+          }
+          saveSettings();
+          const existing = loadJson(REFRESH_QUEUE_KEY, []);
+          const byKey = new Map((Array.isArray(existing) ? existing : []).map((row) => [refreshQueueKey(row), row]));
+          let added = 0;
+          rows.map(warehouseRowToRefreshQueue).forEach((row) => {
+            const key = refreshQueueKey(row);
+            if (!key) return;
+            const previous = byKey.get(key);
+            byKey.set(key, { ...(previous || {}), ...row });
+            if (!previous) added += 1;
+          });
+          localStorage.setItem(REFRESH_QUEUE_KEY, JSON.stringify([...byKey.values()]));
+          setStatus(elements.status, `已加入凭证刷新队列：${rows.length} 个账号，新增 ${added} 个。`, "ok");
+          addLog(`加入凭证刷新队列：${rows.length} 个账号`, "success");
+          if (jump) {
+            window.location.href = `/refresh.html?v=${Date.now()}`;
+          }
+        }
+
+        function cpaAuthToSub2Item(authFile, row) {
+          const expiresAt = epochSecondsFromValue(authFile.expired);
+          return compactObject({
+            name: authFile.name || row.email || row.name,
+            platform: "openai",
+            type: "oauth",
+            expires_at: expiresAt,
+            auto_pause_on_expired: true,
+            concurrency: 10,
+            priority: 1,
+            credentials: compactObject({
+              access_token: authFile.access_token,
+              refresh_token: authFile.refresh_token,
+              id_token: authFile.id_token,
+              session_token: authFile.session_token,
+              chatgpt_account_id: authFile.chatgpt_account_id || authFile.account_id || "",
+              email: authFile.email || row.email || "",
+              expires_at: expiresAt,
+              plan_type: authFile.plan_type || authFile.chatgpt_plan_type || "",
+            }),
+            extra: compactObject({
+              email: authFile.email || row.email || "",
+              name: authFile.name || row.name || "",
+              source: "gpt_account_manager_cpa_warehouse",
+              last_refresh: authFile.last_refresh || "",
+            }),
+          });
+        }
+
+        function downloadJsonFile(filename, value) {
+          const blob = new Blob([`${JSON.stringify(value, null, 2)}\n`], { type: "application/json;charset=utf-8" });
+          const url = URL.createObjectURL(blob);
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = filename;
+          document.body.append(anchor);
+          anchor.click();
+          anchor.remove();
+          URL.revokeObjectURL(url);
+        }
+
+        function exportWarehouseResults(format) {
+          const rows = selectedResultRows({ requireAuth: true });
+          if (!rows.length) {
+            setStatus(elements.status, "没有可导出的刷新结果，请先刷新成功后再导出。", "error");
+            return;
+          }
+          const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+          if (format === "cpa") {
+            const files = rows.map((row) => row.auth_file);
+            downloadJsonFile(`gpt-account-manager-cpa-auth-${timestamp}.json`, files.length === 1 ? files[0] : files);
+            setStatus(elements.status, `已导出 ${files.length} 个 CPA JSON。`, "ok");
+            return;
+          }
+          downloadJsonFile(`gpt-account-manager-sub2api-accounts-${timestamp}.json`, {
+            exported_at: new Date().toISOString(),
+            proxies: [],
+            accounts: rows.map((row) => cpaAuthToSub2Item(row.auth_file, row)),
+          });
+          setStatus(elements.status, `已导出 ${rows.length} 个 sub2api JSON 账号。`, "ok");
+        }
+
+        async function startAutoLogin() {
+          const payload = buildLoginPayload();
+          if (!payload) return;
+          if (!validatePayload(payload)) return;
+          if (!payload.password) {
+            setStatus(elements.repairStatus, "请输入 OpenAI 登录密码，或在账号管理页导入时把密码放第二段。", "error");
+            addJobLog("缺少 OpenAI 登录密码", "error");
+            return;
+          }
+          if (!payload.temp_addresses.length && !payload.accounts.length) {
+            setStatus(elements.repairMailStatus, "本地没有这个邮箱的取件凭证，无法自动拿验证码。", "error");
+            addJobLog("缺少本地取件凭证", "error");
+            return;
+          }
+          saveSettings();
+          setButtonBusy(elements.startAutoLogin, true, "授权中...");
+          setLoginProgress("queued", "任务已提交");
+          elements.jobLogList.innerHTML = "";
+          addJobLog(`启动兜底授权：${payload.email}`, "info");
+          try {
+            const response = await fetch("/client-api/cpa/login-start", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) throw new Error(data.error || "启动兜底授权失败");
+            pollLoginJob(data.job.job_id);
+          } catch (error) {
+            setButtonBusy(elements.startAutoLogin, false);
+            setLoginProgress("failed", "启动失败");
+            const message = error instanceof Error ? error.message : "启动兜底授权失败";
+            setStatus(elements.repairStatus, message, "error");
+            addJobLog(message, "error");
+          }
+        }
+
+        async function pollLoginJob(jobId) {
+          if (state.jobTimer) clearInterval(state.jobTimer);
+          const poll = async () => {
+            try {
+              const response = await fetch(`/client-api/cpa/login-status?job_id=${encodeURIComponent(jobId)}`, { cache: "no-store" });
+              const data = await response.json();
+              if (!response.ok || !data.success) throw new Error(data.error || "读取登录任务失败");
+              const job = data.job || {};
+              renderJobLogs(job.logs || []);
+              setLoginProgress(job.status, job.status === "success" ? "登录成功，已上传 CPA" : job.status === "failed" ? "登录失败" : "登录处理中");
+              if (job.status !== state.lastJobStatus) {
+                state.lastJobStatus = job.status;
+                addLog(`登录任务状态：${job.email || "账号"} ${job.status}`, job.status === "failed" ? "error" : job.status === "success" ? "success" : "info");
+              }
+              if (job.status === "success" || job.status === "failed") {
+                clearInterval(state.jobTimer);
+                state.jobTimer = undefined;
+                setButtonBusy(elements.startAutoLogin, false);
+                if (job.status === "success") {
+                  setStatus(elements.repairStatus, "兜底授权完成，已上传新的 CPA auth。建议再扫描确认。", "ok");
+                  if (job.result?.result) {
+                    const row = { ...state.repairRow, ...job.result.result, action: "replaced", ok: true };
+                    state.rows = state.rows.map((item) => item === state.repairRow ? row : item);
+                    state.repairRow = row;
+                    renderRows(state.rows);
+                  }
+                } else {
+                  setStatus(elements.repairStatus, job.error || "兜底授权失败", "error");
+                }
+              }
+            } catch (error) {
+              clearInterval(state.jobTimer);
+              state.jobTimer = undefined;
+              setButtonBusy(elements.startAutoLogin, false);
+              const message = error instanceof Error ? error.message : "读取登录任务失败";
+              setLoginProgress("failed", "读取失败");
+              setStatus(elements.repairStatus, message, "error");
+              addJobLog(message, "error");
+            }
+          };
+          await poll();
+          if (state.jobTimer === undefined && state.lastJobStatus && ["success", "failed"].includes(state.lastJobStatus)) return;
+          state.jobTimer = setInterval(poll, 2000);
+        }
+
+        async function requestWarehouse(action, options = {}) {
+          saveSettings();
+          const payload = getPayload();
+          if (!validatePayload(payload)) {
+            return undefined;
+          }
+          if (state.busy) {
+            if (!options.silent) {
+              setStatus(elements.status, "CPA 仓管正在处理中。", "error");
+            }
+            return undefined;
+          }
+
+          const isRepair = action === "repair-401";
+          const isDelete = action === "delete";
+          const endpoint = action;
+          if (isRepair || isDelete) {
+            payload.items = Array.isArray(options.items) ? options.items : selectedResultRows();
+            if (!payload.items.length) {
+              setStatus(elements.status, "没有选中的错误账号。", "error");
+              return undefined;
+            }
+          }
+          const button = isDelete ? elements.deleteSelected : (isRepair ? elements.repair401 : elements.scan401);
+          state.busy = true;
+          if (!options.silent) {
+            setButtonBusy(button, true, isDelete ? "删除中..." : (isRepair ? "刷新中..." : "扫描中..."));
+          }
+          setConnection("running", options.auto ? "自动运行中" : "连接中");
+          try {
+            const response = await fetch(`/client-api/cpa/${endpoint}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+              throw new Error(data.error || "CPA 请求失败");
+            }
+            renderRows((isRepair || isDelete) ? data.results : data.candidates);
+            updateStats(data.summary || {
+              total: data.total,
+              candidates: (data.candidates || []).length,
+              uploaded: 0,
+            });
+            const summary = data.summary || {};
+            const found = summary.candidates ?? summary.invalid ?? (data.candidates || []).length ?? 0;
+            const uploaded = summary.uploaded ?? 0;
+            const deleted = summary.deleted ?? 0;
+            const message = isRepair
+              ? `刷新完成：处理 ${summary.total ?? 0} 个凭证，已推送 ${uploaded} 个，可用 ${summary.active ?? 0} 个。`
+              : isDelete
+                ? `删除完成：处理 ${summary.total ?? 0} 个，已删除 ${deleted} 个。`
+              : `扫描完成：发现 ${found} 个错误账号。`;
+            setStatus(elements.status, message, "ok");
+            const connectionText = isDelete ? `已删除 ${deleted} 个` : (found ? `已连接 · ${found} 个错误账号` : "已连接");
+            setConnection("connected", connectionText);
+            addLog(message, isDelete ? (deleted ? "success" : "warning") : (found ? "warning" : "success"));
+            return data;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "CPA 请求失败";
+            setStatus(elements.status, message, "error");
+            setConnection("error", "连接失败");
+            addLog(message, "error");
+            return undefined;
+          } finally {
+            state.busy = false;
+            if (!options.silent) {
+              setButtonBusy(button, false);
+            }
+          }
+        }
+
+        function stopAuto(message = "自动仓管已关闭。") {
+          if (state.timer) {
+            clearInterval(state.timer);
+            state.timer = undefined;
+          }
+          setConnection("idle", "未连接");
+          addLog(message, "info");
+        }
+
+        function startAuto() {
+          saveSettings();
+          const payload = getPayload();
+          if (!validatePayload(payload)) {
+            elements.autoToggle.checked = false;
+            saveSettings();
+            return;
+          }
+          if (state.timer) {
+            clearInterval(state.timer);
+          }
+          const minutes = Math.max(1, Math.min(Number.parseInt(elements.autoInterval.value, 10) || 5, 1440));
+          elements.autoInterval.value = String(minutes);
+          addLog(`自动仓管已开启：每 ${minutes} 分钟刷新并推送 401 凭证。`, "success");
+          requestWarehouse("repair-401", { auto: true, silent: true });
+          state.timer = setInterval(() => {
+            requestWarehouse("repair-401", { auto: true, silent: true });
+          }, minutes * 60 * 1000);
+        }
+
+        function restartAutoIfNeeded() {
+          saveSettings();
+          if (elements.autoToggle.checked) {
+            startAuto();
+          }
+        }
+
+        elements.scan401.addEventListener("click", () => requestWarehouse("scan-401"));
+        elements.sendRefreshQueue.addEventListener("click", () => sendSelectedToRefreshQueue());
+        elements.deleteSelected.addEventListener("click", () => {
+          if (!state.rows.length) {
+            setStatus(elements.status, "先扫描或导入错误账号。", "error");
+            return;
+          }
+          requestWarehouse("delete", { items: selectedResultRows() });
+        });
+        elements.repair401.addEventListener("click", () => requestWarehouse("repair-401"));
+        elements.importManual401.addEventListener("click", importManual401Rows);
+        elements.manual401File.addEventListener("change", importManual401File);
+        elements.sendImportedRefreshQueue.addEventListener("click", () => sendSelectedToRefreshQueue());
+        elements.repairSelected401.addEventListener("click", () => {
+          if (!state.rows.length) {
+            setStatus(elements.status, "先扫描或导入 401 邮箱。", "error");
+            return;
+          }
+          requestWarehouse("repair-401", { items: selectedResultRows() });
+        });
+        elements.deleteImported401.addEventListener("click", () => {
+          if (!state.rows.length) {
+            setStatus(elements.status, "先扫描或导入错误账号。", "error");
+            return;
+          }
+          requestWarehouse("delete", { items: selectedResultRows() });
+        });
+        elements.exportCpaJson.addEventListener("click", () => exportWarehouseResults("cpa"));
+        elements.exportSub2Json.addEventListener("click", () => exportWarehouseResults("sub2"));
+        elements.selectAllRows.addEventListener("change", () => {
+          state.rows.forEach((row) => {
+            const key = rowKey(row);
+            if (elements.selectAllRows.checked) state.selectedRows.add(key);
+            else state.selectedRows.delete(key);
+          });
+          renderRows(state.rows);
+        });
+        elements.closeRepair.addEventListener("click", closeRepair);
+        elements.copyRepairEmail.addEventListener("click", () => {
+          copyText(state.repairRow?.email || state.repairRow?.account || "", elements.repairMailStatus, "已复制邮箱。");
+        });
+        elements.openChatgptLogin.addEventListener("click", () => {
+          window.open("https://chatgpt.com/auth/login", "_blank", "noopener,noreferrer");
+        });
+        elements.openChatgptSession.addEventListener("click", () => {
+          window.open("https://chatgpt.com/api/auth/session", "_blank", "noopener,noreferrer");
+        });
+        elements.fetchRepairMail.addEventListener("click", fetchRepairMail);
+        elements.convertRepairSession.addEventListener("click", convertRepairSession);
+        elements.replaceRepairAuth.addEventListener("click", replaceRepairAuth);
+        elements.startAutoLogin.addEventListener("click", startAutoLogin);
+        elements.tableBody.addEventListener("click", (event) => {
+          const button = event.target.closest(".repair-row");
+          if (!button) return;
+          const row = state.rows[Number(button.dataset.index)];
+          if (row) openRepair(row);
+        });
+        elements.tableBody.addEventListener("change", (event) => {
+          const input = event.target.closest(".result-check");
+          if (!input) return;
+          const row = state.rows[Number(input.dataset.index)];
+          if (!row) return;
+          const key = rowKey(row);
+          if (input.checked) state.selectedRows.add(key);
+          else state.selectedRows.delete(key);
+          elements.selectAllRows.checked = state.rows.length > 0 && state.rows.every((item) => state.selectedRows.has(rowKey(item)));
+        });
+        elements.autoToggle.addEventListener("change", () => {
+          saveSettings();
+          if (elements.autoToggle.checked) {
+            startAuto();
+          } else {
+            stopAuto();
+          }
+        });
+        [elements.baseUrl, elements.managementKey, elements.maxItems, elements.autoInterval, elements.proxyUrl, elements.useProxy].forEach((input) => {
+          input.addEventListener("input", saveSettings);
+          input.addEventListener("change", restartAutoIfNeeded);
+        });
+
+        loadSettings();
+        if (elements.autoToggle.checked) {
+          startAuto();
+        }
+      })();
+    </script>
+  </body>
+</html>

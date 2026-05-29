@@ -1,0 +1,307 @@
+:root {
+  --forge-bg-base: #e8edf5;
+  --forge-glass: rgba(255, 255, 255, 0.56);
+  --forge-glass-strong: rgba(255, 255, 255, 0.76);
+  --forge-border: rgba(255, 255, 255, 0.68);
+  --forge-line: rgba(80, 112, 160, 0.14);
+  --forge-text: #1e293b;
+  --forge-muted: #64748b;
+  --forge-faint: #94a3b8;
+  --forge-accent: #2563eb;
+  --forge-accent-2: #0ea5e9;
+  --forge-success: #059669;
+  --forge-warning: #d97706;
+  --forge-danger: #e11d48;
+  --forge-radius-sm: 10px;
+  --forge-radius-md: 14px;
+  --forge-radius-lg: 18px;
+  --forge-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02);
+  --forge-shadow-md: 0 4px 16px rgba(100, 120, 180, 0.1), 0 1px 4px rgba(0, 0, 0, 0.04);
+  --forge-shadow-lg: 0 8px 32px rgba(100, 120, 180, 0.15), 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+body {
+  background: var(--forge-bg-base) !important;
+  color: var(--forge-text);
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 4% 0%, rgba(147, 197, 253, 0.5), transparent 34%),
+    radial-gradient(circle at 94% 28%, rgba(196, 181, 253, 0.38), transparent 32%),
+    radial-gradient(circle at 38% 100%, rgba(165, 218, 255, 0.46), transparent 34%),
+    linear-gradient(135deg, #e0e7ff 0%, #dbeafe 25%, #e0f2fe 50%, #ede9fe 75%, #e8edf5 100%) !important;
+  mask-image: none !important;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.36) 1px, transparent 1px) 0 0 / 42px 42px,
+    linear-gradient(0deg, rgba(78, 104, 154, 0.06) 1px, transparent 1px) 0 0 / 42px 42px;
+  opacity: 0.6;
+}
+
+.shell,
+.app {
+  position: relative;
+  z-index: 1;
+}
+
+.shell {
+  width: min(1680px, calc(100vw - 40px));
+  margin: 20px auto;
+}
+
+.app {
+  width: min(1680px, calc(100vw - 40px));
+  padding: 20px 0;
+}
+
+.topbar,
+.module-tabs,
+.toolbar,
+.panel,
+.search-strip,
+.mail-list-panel,
+.mail-detail-panel,
+.log-panel,
+.table-wrap,
+.accounts,
+.modal {
+  border: 1px solid var(--forge-border) !important;
+  border-radius: var(--forge-radius-lg) !important;
+  background: var(--forge-glass) !important;
+  box-shadow: var(--forge-shadow-md) !important;
+  backdrop-filter: blur(28px) saturate(1.4) !important;
+  -webkit-backdrop-filter: blur(28px) saturate(1.4) !important;
+}
+
+.topbar {
+  min-height: 76px !important;
+  padding: 14px 22px !important;
+  margin-bottom: 14px !important;
+}
+
+.brand-mark {
+  width: 42px !important;
+  height: 42px !important;
+  border-radius: 12px !important;
+  background: linear-gradient(135deg, #3b82f6, #06b6d4) !important;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3) !important;
+}
+
+.brand-copy strong {
+  color: var(--forge-text) !important;
+  font-size: 18px !important;
+  font-weight: 800 !important;
+}
+
+.brand-copy em {
+  color: var(--forge-muted) !important;
+  font-size: 12px !important;
+}
+
+.topnav a,
+.meta-chip,
+.module-tab,
+button,
+.button {
+  border-radius: var(--forge-radius-sm) !important;
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease, color 0.15s ease !important;
+}
+
+.topnav a,
+.meta-chip {
+  min-height: 28px !important;
+  padding: 4px 7px !important;
+  border: 1px solid rgba(0, 0, 0, 0.06) !important;
+  background: rgba(255, 255, 255, 0.55) !important;
+  color: var(--forge-muted) !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+}
+
+.topnav a:hover,
+.meta-chip:hover,
+button:hover:not(:disabled),
+.button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.86) !important;
+}
+
+.module-tabs {
+  padding: 4px !important;
+  gap: 5px !important;
+}
+
+.module-tab {
+  min-height: 28px !important;
+  padding: 4px 7px !important;
+  color: var(--forge-muted) !important;
+  font-size: 11px !important;
+}
+
+button,
+.button {
+  min-height: 28px !important;
+  padding: 4px 7px !important;
+  font-size: 11px !important;
+  line-height: 1.15 !important;
+  white-space: nowrap !important;
+}
+
+.module-tab.active {
+  background: linear-gradient(135deg, var(--forge-accent), var(--forge-accent-2)) !important;
+  color: #fff !important;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.28) !important;
+}
+
+input,
+select,
+textarea {
+  border-color: rgba(0, 0, 0, 0.06) !important;
+  border-radius: var(--forge-radius-sm) !important;
+  background: rgba(255, 255, 255, 0.66) !important;
+  color: var(--forge-text) !important;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: rgba(37, 99, 235, 0.42) !important;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1) !important;
+  outline: none !important;
+}
+
+.primary,
+.button-primary,
+.segmented button[aria-pressed="true"] {
+  border-color: transparent !important;
+  background: linear-gradient(135deg, var(--forge-accent), var(--forge-accent-2)) !important;
+  color: #fff !important;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.24) !important;
+}
+
+.ghost,
+.button-secondary,
+.button-ghost,
+button:not(.primary):not(.button-primary) {
+  background: rgba(255, 255, 255, 0.52) !important;
+  border-color: rgba(0, 0, 0, 0.06) !important;
+  color: var(--forge-muted) !important;
+}
+
+.workspace {
+  gap: 14px !important;
+}
+
+.panel,
+.mail-list-panel,
+.mail-detail-panel {
+  overflow: hidden;
+}
+
+.panel-head,
+.section-head {
+  border-color: var(--forge-line) !important;
+}
+
+.eyebrow,
+.stat-label,
+.status-row,
+.status-line,
+.mail-item-meta,
+.mail-item-preview,
+label span,
+.form-field > span,
+.auto-fields,
+.empty {
+  color: var(--forge-muted) !important;
+}
+
+.counter,
+.status-pill {
+  border: 1px solid rgba(37, 99, 235, 0.14) !important;
+  background: rgba(37, 99, 235, 0.08) !important;
+  color: var(--forge-accent) !important;
+}
+
+.mailbox-row,
+.mail-item,
+.stat,
+.log-item,
+th,
+td,
+.session-guide,
+.notice {
+  border-color: rgba(0, 0, 0, 0.06) !important;
+}
+
+.mailbox-row,
+.mail-item,
+.stat,
+.log-item {
+  background: rgba(255, 255, 255, 0.52) !important;
+}
+
+.mail-item.active {
+  background: rgba(255, 255, 255, 0.88) !important;
+  border-color: rgba(37, 99, 235, 0.38) !important;
+  box-shadow: inset 4px 0 0 var(--forge-accent), var(--forge-shadow-sm) !important;
+}
+
+th {
+  background: rgba(239, 246, 255, 0.88) !important;
+  color: var(--forge-muted) !important;
+}
+
+.mail-detail pre,
+.mail-html-frame {
+  border-color: rgba(0, 0, 0, 0.06) !important;
+  border-radius: var(--forge-radius-md) !important;
+  background: rgba(255, 255, 255, 0.72) !important;
+}
+
+.ok,
+.ok-text,
+.status-line.is-ok {
+  color: var(--forge-success) !important;
+}
+
+.bad,
+.bad-text,
+.danger,
+.status-line.is-error {
+  color: var(--forge-danger) !important;
+}
+
+@media (max-width: 720px) {
+  .shell,
+  .app {
+    width: calc(100vw - 12px);
+    margin: 6px auto;
+    padding-top: 0;
+  }
+
+  .topbar,
+  .module-tabs,
+  .toolbar,
+  .panel,
+  .search-strip,
+  .mail-list-panel,
+  .mail-detail-panel,
+  .panel-head,
+  .panel-body {
+    border-radius: var(--forge-radius-md) !important;
+  }
+}

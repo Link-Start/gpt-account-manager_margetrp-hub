@@ -1,0 +1,19 @@
+{
+  "name": "gpt-account-manager",
+  "private": true,
+  "description": "Browser-first GPT account management assistant for mail verification, OAuth refresh, and CPA/Sub2API auth exports.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/margetrp-hub/gpt-account-manager.git"
+  },
+  "homepage": "https://github.com/margetrp-hub/gpt-account-manager#readme",
+  "bugs": {
+    "url": "https://github.com/margetrp-hub/gpt-account-manager/issues"
+  },
+  "dependencies": {
+    "undici": "^5.28.5"
+  },
+  "devDependencies": {
+    "playwright": "^1.60.0"
+  }
+}

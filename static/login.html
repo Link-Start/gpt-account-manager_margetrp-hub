@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GPT账号管理助手 - 管理员登录</title>
+  <link rel="stylesheet" href="/styles.css?v=20260530-gpt-account-manager">
+  <link rel="stylesheet" href="/forge-theme.css?v=20260530-gpt-account-manager">
+</head>
+<body>
+  <main class="login-page">
+    <section class="panel admin-login-card">
+      <a class="brand" href="/" aria-label="GPT账号管理助手">
+        <span class="brand-mark" aria-hidden="true">AD</span>
+        <span class="brand-copy">
+          <strong>管理员登录</strong>
+          <em>本机记住令牌，后续进入管理员页和自检页不用再拼 URL</em>
+        </span>
+      </a>
+      <form id="adminLoginForm" class="admin-login-form">
+        <label>
+          <span>管理令牌</span>
+          <input id="adminToken" type="password" autocomplete="current-password" placeholder="MAIL_PICKUP_ADMIN_TOKEN" autofocus>
+        </label>
+        <button id="loginButton" class="primary" type="submit">进入</button>
+      </form>
+      <p id="loginStatus" class="login-note">令牌只保存在当前浏览器和本工具的登录 Cookie 中。</p>
+    </section>
+  </main>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const next = params.get("next") || "/admin.html";
+    const tokenInput = document.querySelector("#adminToken");
+    const form = document.querySelector("#adminLoginForm");
+    const button = document.querySelector("#loginButton");
+    const status = document.querySelector("#loginStatus");
+    const remembered = localStorage.getItem("ctgptm.admin.toolToken") || "";
+    if (remembered) tokenInput.value = remembered;
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const token = tokenInput.value.trim();
+      if (!token) {
+        status.textContent = "先填管理令牌。";
+        return;
+      }
+      button.disabled = true;
+      button.textContent = "验证中";
+      status.textContent = "正在验证令牌...";
+      try {
+        const response = await fetch("/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload.success) {
+          throw new Error(payload.error || "令牌不正确");
+        }
+        localStorage.setItem("ctgptm.admin.toolToken", token);
+        window.location.href = next.startsWith("/") ? next : "/admin.html";
+      } catch (error) {
+        status.textContent = error.message || "登录失败";
+        button.disabled = false;
+        button.textContent = "进入";
+      }
+    });
+  </script>
+</body>
+</html>

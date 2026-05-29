@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GPT账号管理助手 - 管理员提取器</title>
+  <link rel="stylesheet" href="/styles.css?v=20260530-gpt-account-manager">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="/admin.html" aria-label="管理员页">
+        <span class="brand-mark">AD</span>
+        <span>GPT账号管理助手 管理员提取器</span>
+      </a>
+      <nav class="topnav" aria-label="顶部导航">
+        <a href="https://shop.ohlaoo.com/" target="_blank" rel="noreferrer">商城</a>
+        <a href="https://ohlaoo.com/" target="_blank" rel="noreferrer">中转站</a>
+        <a id="publicPoolLink" href="/public-pool" target="_blank" rel="noreferrer">公益站</a>
+        <a href="/converter.html">转换器</a>
+        <a href="/">客户页</a>
+      </nav>
+    </header>
+
+    <main class="admin-workspace">
+      <section class="panel admin-control">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Cloudflare Temp Email Admin</p>
+            <h1>批量提取邮箱 JWT</h1>
+          </div>
+          <span id="adminStatus" class="status-pill">待连接</span>
+        </div>
+
+        <div class="admin-grid">
+          <label>
+            <span>本工具管理令牌</span>
+            <input id="toolToken" type="password" autocomplete="off" placeholder="MAIL_PICKUP_ADMIN_TOKEN">
+          </label>
+          <label>
+            <span>临时邮箱 Worker 后台地址</span>
+            <input id="workerUrl" placeholder="https://maip.wsphl.cfd">
+          </label>
+          <label>
+            <span>管理员口令</span>
+            <input id="workerAdminPassword" type="password" autocomplete="off" placeholder="x-admin-auth">
+          </label>
+          <label>
+            <span>站点口令</span>
+            <input id="workerSitePassword" type="password" autocomplete="off" placeholder="x-custom-auth，可选">
+          </label>
+        </div>
+
+        <label class="wide-label">
+          <span>邮箱名，一行一个</span>
+          <textarea id="emailNames" spellcheck="false" placeholder="user@example.com&#10;demo@example.com"></textarea>
+        </label>
+
+        <div class="button-row">
+          <button id="extractBtn" class="primary" type="button">批量提取</button>
+          <button id="copyExportBtn" type="button">复制结果</button>
+          <button id="pushPoolBtn" type="button">推送公益池</button>
+          <button id="clearAdminBtn" class="ghost danger" type="button">清空结果</button>
+        </div>
+
+        <div class="public-pool-box">
+          <div class="section-head">
+            <h2>公益池推送</h2>
+            <span id="poolStatus">只推送勾选账号</span>
+          </div>
+          <div class="admin-grid compact-grid">
+            <label>
+              <span>公益池 API</span>
+              <input id="poolApiUrl" placeholder="留空则生成 JSON，不直接推送">
+            </label>
+            <label>
+              <span>公益池口令</span>
+              <input id="poolToken" type="password" autocomplete="off" placeholder="可选 Bearer token">
+            </label>
+          </div>
+          <label class="wide-label">
+            <span>手动加入公益池（邮箱----JWT，一行一个）</span>
+            <textarea id="poolManualText" spellcheck="false" placeholder="user@example.com----jwt"></textarea>
+          </label>
+          <textarea id="poolExportText" class="export-box compact-export" readonly placeholder="公益池 JSON 会出现在这里"></textarea>
+        </div>
+      </section>
+
+      <section class="panel result-panel">
+        <div class="section-head">
+          <h2>提取结果</h2>
+          <span id="resultCount">0 条</span>
+        </div>
+        <div class="result-table-wrap">
+          <table class="result-table">
+            <thead>
+              <tr>
+                <th>选</th>
+                <th>邮箱名</th>
+                <th>ID</th>
+                <th>JWT</th>
+                <th>状态</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="resultRows">
+              <tr><td colspan="6" class="empty-cell">暂无结果</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <textarea id="exportText" class="export-box" readonly placeholder="邮箱----JWT"></textarea>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/admin.js?v=20260528-ms-detail-html" defer></script>
+</body>
+</html>
