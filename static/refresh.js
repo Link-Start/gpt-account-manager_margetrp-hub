@@ -22,6 +22,9 @@ const state = {
   poller: undefined,
   sourcePage: 1,
   savedRefreshResults: new Map(),
+  runProxyIps: new Set(),
+  lastLog: null,
+  logThrottle: new Map(),
 };
 
 const els = {
@@ -51,6 +54,7 @@ const els = {
   queueSuccess: document.querySelector("#queueSuccess"),
   queueFailed: document.querySelector("#queueFailed"),
   queueProgress: document.querySelector("#queueProgress"),
+  queueSelectAll: document.querySelector("#queueSelectAll"),
   queueBody: document.querySelector("#queueBody"),
   clearLogs: document.querySelector("#clearLogs"),
   logHint: document.querySelector("#logHint"),
@@ -60,17 +64,26 @@ const els = {
   cpaBaseUrl: document.querySelector("#cpaBaseUrl"),
   cpaManagementKey: document.querySelector("#cpaManagementKey"),
   taskMode: document.querySelector("#taskMode"),
+  tempSyncApi: document.querySelector("#tempSyncApi"),
+  tempSyncAdminKey: document.querySelector("#tempSyncAdminKey"),
+  tempSyncSitePassword: document.querySelector("#tempSyncSitePassword"),
+  syncTempCredentials: document.querySelector("#syncTempCredentials"),
+  pickupImportText: document.querySelector("#pickupImportText"),
+  importPickupCredentials: document.querySelector("#importPickupCredentials"),
 };
 
 const settings = loadJson(STORAGE_KEYS.refreshSettings, {});
 els.useProxy.checked = true;
 els.proxyUrl.value = settings.proxy_url || "";
 if (els.loginStrategy) els.loginStrategy.value = "protocol";
-els.loginConcurrency.value = String(Math.min(2, Math.max(1, Number(settings.login_concurrency || 1))));
+if (els.loginConcurrency) els.loginConcurrency.value = "1";
 if (els.autoUpdateCpa) els.autoUpdateCpa.checked = Boolean(settings.auto_update_cpa);
 if (els.cpaBaseUrl) els.cpaBaseUrl.value = settings.cpa_base_url || "";
 if (els.cpaManagementKey) els.cpaManagementKey.value = settings.cpa_management_key || "";
 if (els.taskMode) els.taskMode.value = settings.task_mode || "login";
+if (els.tempSyncApi) els.tempSyncApi.value = settings.temp_sync_api || "";
+if (els.tempSyncAdminKey) els.tempSyncAdminKey.value = settings.temp_sync_admin_key || "";
+if (els.tempSyncSitePassword) els.tempSyncSitePassword.value = settings.temp_sync_site_password || "";
 if (els.loginStrategy) els.loginStrategy.value = "protocol";
 if (els.taskMode) els.taskMode.value = "login";
 
@@ -149,8 +162,188 @@ function parseErrorPayload(data, fallback = "启动失败") {
   };
 }
 
+const ERROR_MANUAL = {
+  proxy_required: "需要代理",
+  proxy_format_invalid: "代理格式错误",
+  proxy_check_failed: "代理检测失败",
+  proxy_ip_duplicate: "代理出口重复",
+  mail_credentials_missing: "缺取码邮箱",
+  admin_required: "需要管理员登录",
+  temp_sync_config_missing: "临时邮箱同步配置缺失",
+  temp_sync_failed: "临时邮箱同步失败",
+  pickup_import_empty: "缺少 Outlook 取码资料",
+  pickup_import_failed: "Outlook 取码导入失败",
+  verification_code_missing: "未收到验证码",
+  verification_code_invalid: "验证码无效",
+  phone_verification_required: "需要手机验证",
+  account_banned: "账号被封禁",
+  account_not_found: "账号不存在",
+  login_page_not_ready: "登录页未就绪",
+  oauth_session_missing: "授权会话失败",
+  authorization_failed: "授权失败",
+  unsupported_country_region_territory: "地区不支持",
+  csrf_or_risk_blocked: "风控拦截",
+  risk_blocked: "风控拦截",
+  openai_turnstile_challenge: "安全验证",
+  openai_security_verification: "安全验证",
+  openai_auth_risk_blocked: "风控拦截",
+  oauth_invalid_auth_step: "登录步骤失效",
+  invalid_auth_step: "登录步骤失效",
+  request_forbidden: "请求被拒绝",
+  proxy_ip_unavailable: "代理出口不可用",
+  network_incomplete_read: "网络中断",
+  login_network_blocked: "网络受限",
+  login_failed: "登录失败",
+};
+
+const LOG_STEP_LABELS = {
+  oauth_init: "准备授权",
+  authorize: "建立授权会话",
+  sentinel: "生成风控令牌",
+  mail_credentials: "检查取码邮箱",
+  egress: "检测代理出口",
+  strategy: "建立登录会话",
+  start: "任务启动",
+  identifier: "提交邮箱",
+  password: "处理登录方式",
+  send_code: "发送邮箱验证码",
+  waiting_code: "等待验证码",
+  mail_code_poll: "查收邮箱",
+  mail_code_missing: "未收到验证码",
+  verify_code: "提交验证码",
+  callback: "接收授权回调",
+  cpa_callback: "提交授权回调",
+  token: "交换授权令牌",
+  session: "读取会话",
+  oauth: "获取授权",
+  convert: "生成凭证",
+  persist_success: "保存结果",
+  persist_failed: "保存结果失败",
+  uploading: "同步 CPA",
+  upload: "同步 CPA",
+  done: "完成",
+  success: "完成",
+  failed: "失败",
+  browser_queue: "等待浏览器槽位",
+  security_check: "等待安全验证",
+  login_ready: "登录页就绪",
+  login_loading: "登录页加载中",
+  snapshot: "保存页面快照",
+  hint: "处理建议",
+};
+
+const LOG_TYPE_LABELS = {
+  info: "进度",
+  success: "成功",
+  warning: "提示",
+  error: "错误",
+};
+
+const LOG_THROTTLE_MS = {
+  authorize: 4500,
+  egress: 1200,
+  mail_code_poll: 2500,
+};
+
+function errorCodeLabel(code) {
+  return ERROR_MANUAL[String(code || "")] || String(code || "login_failed");
+}
+
+function inferErrorCode(job = {}) {
+  const current = String(job.error_code || job.code || "").trim();
+  if (current && current !== "login_failed") return current;
+  const text = `${job.error || ""} ${job.error_hint || ""} ${job.message || ""}`.toLowerCase();
+  if (!text.trim()) return current || "";
+  if (/phone verification|phone number|mobile|mfa|required phone|手机验证|手机号|手机号码/.test(text)) {
+    return "phone_verification_required";
+  }
+  if (/deactivated|disabled|banned|suspended|deleted account|account deleted|账号被封|账号封禁|账号停用|已停用|被禁用/.test(text)) {
+    return "account_banned";
+  }
+  if (/invalid verification code|invalid email code|invalid otp|incorrect code|code expired|expired code|email code verify failed|验证码无效|验证码错误|验证码已过期|验证码过期/.test(text)) {
+    return "verification_code_invalid";
+  }
+  if (/no verification code|verification code was found|未收到验证码|没有收到验证码|取不到验证码/.test(text)) {
+    return "verification_code_missing";
+  }
+  if (/user not found|account not found|no account|账号不存在|账户不存在/.test(text)) {
+    return "account_not_found";
+  }
+  if (/turnstile|security verification|cloudflare|csrf|access denied|risk|风控|安全验证/.test(text)) {
+    return "risk_blocked";
+  }
+  if (/incompleteread|incomplete read|connection closed|eof|network|ssl|连接中途断开|网络/.test(text)) {
+    return "network_incomplete_read";
+  }
+  if (/unauthorized|401/.test(text)) {
+    return "authorization_failed";
+  }
+  if (/invalid authorization|invalid_auth_step/.test(text)) {
+    return "oauth_invalid_auth_step";
+  }
+  return current || "login_failed";
+}
+
+function compactText(value, max = 120) {
+  const clean = String(value || "")
+    .replace(/https?:\/\/\S+/g, "[link]")
+    .replace(/\s+/g, " ")
+    .trim();
+  return clean.length > max ? `${clean.slice(0, max)}...` : clean;
+}
+
+function compactLogMessage(message, meta = {}) {
+  const email = meta.email || String(message || "").match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || "";
+  const step = String(meta.step || "");
+  const rawCode = String(meta.error_code || meta.code || "");
+  const code = rawCode || meta.log_type === "error"
+    ? inferErrorCode({
+      error_code: rawCode,
+      error: message,
+      error_hint: meta.error_hint || meta.hint || "",
+    })
+    : "";
+  if (code) {
+    return `${email ? `${email} ` : ""}${errorCodeLabel(code)}`;
+  }
+  if (step && ERROR_MANUAL[step]) {
+    return `${email ? `${email} ` : ""}${errorCodeLabel(step)}`;
+  }
+  if (step && LOG_STEP_LABELS[step]) {
+    if (step === "egress") {
+      const ip = String(message || "").match(/ip=([0-9a-fA-F:.]+)/)?.[1] || "";
+      return `${email ? `${email} ` : ""}${LOG_STEP_LABELS[step]}${ip ? `：${ip}` : ""}`;
+    }
+    return `${email ? `${email} ` : ""}${LOG_STEP_LABELS[step]}`;
+  }
+  if (step) {
+    return `${email ? `${email} ` : ""}处理进度`;
+  }
+  return compactText(message, 140);
+}
+
 function accountEmailKey(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function isMaskedSecret(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return /^\*+$/.test(text) || text.includes("...");
+}
+
+function preferRealSecret(nextValue, currentValue) {
+  const nextText = String(nextValue || "");
+  const currentText = String(currentValue || "");
+  if (!nextText) return currentText;
+  if (isMaskedSecret(nextText) && currentText && !isMaskedSecret(currentText)) {
+    return currentText;
+  }
+  return nextText;
+}
+
+function hasCredentialValue(value) {
+  return Boolean(String(value || "").trim());
 }
 
 function isCodePickupError(code, text = "") {
@@ -198,6 +391,10 @@ async function readJsonResponse(response, fallback = "请求失败") {
   return data;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function proxyFormatError(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -240,15 +437,19 @@ function failRow(row, details) {
 }
 
 function saveSettings() {
+  if (els.loginConcurrency) els.loginConcurrency.value = "1";
   saveJson(STORAGE_KEYS.refreshSettings, {
     use_proxy: true,
     proxy_url: els.proxyUrl.value.trim(),
     login_strategy: "protocol",
-    login_concurrency: Math.min(2, Math.max(1, Number(els.loginConcurrency?.value || 1))),
+    login_concurrency: 1,
     auto_update_cpa: els.autoUpdateCpa ? els.autoUpdateCpa.checked : false,
     cpa_base_url: els.cpaBaseUrl ? els.cpaBaseUrl.value.trim() : "",
     cpa_management_key: els.cpaManagementKey ? els.cpaManagementKey.value.trim() : "",
     task_mode: els.taskMode ? els.taskMode.value : "login",
+    temp_sync_api: els.tempSyncApi ? els.tempSyncApi.value.trim() : "",
+    temp_sync_admin_key: els.tempSyncAdminKey ? els.tempSyncAdminKey.value.trim() : "",
+    temp_sync_site_password: els.tempSyncSitePassword ? els.tempSyncSitePassword.value.trim() : "",
   });
 }
 
@@ -479,11 +680,11 @@ function loginLabel(status) {
 }
 
 function formatJobError(job) {
-  const parts = [];
-  if (job.error_code) parts.push(`[${job.error_code}]`);
-  if (job.error) parts.push(job.error);
-  if (job.error_hint) parts.push(`建议：${job.error_hint}`);
-  return parts.join(" ") || "-";
+  const code = inferErrorCode(job);
+  if (code) return errorCodeLabel(code);
+  const detail = compactText(job.error_hint || job.error || "", 90);
+  if (detail) return errorCodeLabel("login_failed");
+  return "-";
 }
 
 function displayStatus(job) {
@@ -519,6 +720,10 @@ function renderQueue() {
   els.queueSuccess.textContent = String(counts.success || 0);
   els.queueFailed.textContent = String(counts.failed || 0);
   renderQueueProgress(counts);
+  if (els.queueSelectAll) {
+    els.queueSelectAll.checked = Boolean(state.queue.length) && state.queue.every((row) => state.selectedQueue.has(row.id));
+    els.queueSelectAll.indeterminate = state.queue.some((row) => state.selectedQueue.has(row.id)) && !els.queueSelectAll.checked;
+  }
   if (!state.queue.length) {
     els.queueBody.innerHTML = '<tr><td colspan="6" class="empty-cell">从左侧选择邮箱加入刷新队列。</td></tr>';
     return;
@@ -557,6 +762,37 @@ function accountForRow(row) {
   }
   const email = String(row.email || "").toLowerCase();
   return state.accounts.find((account) => String(account.email || "").toLowerCase() === email) || null;
+}
+
+function accountsForEmail(email) {
+  const key = accountEmailKey(email);
+  return state.accounts.filter((account) => accountEmailKey(account.email) === key);
+}
+
+function credentialSourceForRow(row, payload) {
+  const email = row.email || payload.email || row.name || "";
+  const matches = accountsForEmail(email);
+  const hasMicrosoft = matches.some((item) => item.source === "microsoft")
+    || (payload.accounts || []).some((item) => accountEmailKey(item.email) === accountEmailKey(email));
+  const hasTemp = matches.some((item) => item.source === "temp")
+    || (payload.temp_addresses || []).some((item) => accountEmailKey(item.email) === accountEmailKey(email));
+  if (hasMicrosoft) return "microsoft";
+  if (hasTemp) return "temp";
+  return "";
+}
+
+function missingCredentialDetails(row) {
+  const domain = String(row.email || "").split("@")[1] || "";
+  const isTempLike = /wsphl\.cfd$|cmgptm\.online$|maip|temp/i.test(domain);
+  return {
+    error: isTempLike
+      ? "这个账号还没有导入临时邮箱 JWT"
+      : "这个账号还没有导入对应取码邮箱",
+    error_code: "mail_credentials_missing",
+    error_hint: isTempLike
+      ? "先在本页同步队列 JWT，或到账号管理页导入 邮箱----JWT"
+      : "先到账号管理页导入 Outlook 四段凭证，再重新执行",
+  };
 }
 
 function loginPayload(row) {
@@ -620,6 +856,28 @@ function addLog(message, type = "info", meta = {}) {
   if (els.logList.firstElementChild?.textContent === "等待操作。") {
     els.logList.innerHTML = "";
   }
+  const displayMessage = compactLogMessage(message, { ...meta, log_type: type });
+  const step = String(meta.step || "");
+  const throttleMs = LOG_THROTTLE_MS[step] || 0;
+  const throttleKey = `${type}|${meta.email || ""}|${step}|${displayMessage}`;
+  const now = Date.now();
+  if (throttleMs) {
+    const lastAt = state.logThrottle.get(throttleKey) || 0;
+    if (now - lastAt < throttleMs) return;
+    state.logThrottle.set(throttleKey, now);
+  }
+  if (
+    state.lastLog
+    && state.lastLog.type === type
+    && state.lastLog.message === displayMessage
+    && state.lastLog.element?.isConnected
+  ) {
+    state.lastLog.count += 1;
+    const repeat = state.lastLog.element.querySelector(".log-repeat");
+    if (repeat) repeat.textContent = `×${state.lastLog.count}`;
+    els.logHint.textContent = `${displayMessage} ×${state.lastLog.count}`;
+    return;
+  }
   const item = document.createElement("div");
   item.className = `client-log-item ${type}`;
   const snapshotUrl = meta.snapshot_url || meta.snapshotUrl || "";
@@ -628,14 +886,156 @@ function addLog(message, type = "info", meta = {}) {
     : "";
   item.innerHTML = `
     <span>${escapeHtml(new Date().toLocaleTimeString())}</span>
-    <strong>${escapeHtml(type.toUpperCase())}</strong>
-    <em>${escapeHtml(message)}${snapshotAction}</em>
+    <strong>${escapeHtml(LOG_TYPE_LABELS[type] || type.toUpperCase())}</strong>
+    <em>${escapeHtml(displayMessage)}<b class="log-repeat"></b>${snapshotAction}</em>
   `;
   els.logList.prepend(item);
+  state.lastLog = { type, message: displayMessage, element: item, count: 1 };
   while (els.logList.children.length > 300) {
     els.logList.lastElementChild.remove();
   }
-  els.logHint.textContent = message;
+  els.logHint.textContent = displayMessage;
+}
+
+function proxySessionFor(row, attempt) {
+  const seed = `${row.id || row.email || "row"}-${Date.now()}-${attempt}-${Math.random().toString(36).slice(2, 8)}`;
+  return seed.replace(/[^a-zA-Z0-9]/g, "").slice(0, 24) || crypto.randomUUID().replace(/-/g, "").slice(0, 24);
+}
+
+async function checkUniqueProxy(row, payload) {
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    const proxySession = proxySessionFor(row, attempt);
+    addLog(`${row.email} 检测代理出口`, "info", { step: "egress", email: row.email });
+    const response = await fetch("/client-api/proxy/check", {
+      method: "POST",
+      headers: apiHeaders(),
+      body: JSON.stringify({
+        use_proxy: true,
+        proxy_url: payload.proxy_url,
+        proxy_session: proxySession,
+      }),
+    });
+    const data = await readJsonResponse(response, "代理检测失败");
+    if (!data.success) {
+      const details = parseErrorPayload(data, "代理检测失败");
+      const error = new Error(details.error || "代理检测失败");
+      error.details = details;
+      throw error;
+    }
+    const ip = String(data.ip || "").trim();
+    if (!ip) {
+      const error = new Error("代理出口没有返回 IP");
+      error.details = { error: "代理出口没有返回 IP", error_code: "proxy_ip_unavailable", error_hint: "请检查代理是否可用" };
+      throw error;
+    }
+    if (!state.runProxyIps.has(ip)) {
+      state.runProxyIps.add(ip);
+      addLog(`${row.email} 代理出口 ip=${ip}`, "success", { step: "egress", email: row.email });
+      payload.proxy_session = proxySession;
+      row.proxy_ip = ip;
+      return { ip, proxySession };
+    }
+    addLog(`${row.email} 代理出口重复，重新换出口`, "warning", { error_code: "proxy_ip_duplicate", email: row.email });
+    await sleep(700);
+  }
+  const error = new Error("连续检测到重复代理出口");
+  error.details = {
+    error: "连续检测到重复代理出口",
+    error_code: "proxy_ip_duplicate",
+    error_hint: "当前代理没有为每个账号换出不同 IP，请更换代理配置或降低批量数量",
+  };
+  throw error;
+}
+
+function applyJobToRow(row, job, current = rowState(row)) {
+  const oldCount = current.logs?.length || 0;
+  (job.logs || []).slice(oldCount).forEach((entry) => {
+    addLog(`${row.email} ${entry.message || ""}`, entry.level || "info", {
+      ...entry,
+      email: row.email,
+    });
+  });
+
+  const result = job.result || {};
+  const authFile = result.auth_file || result.result?.auth_file || null;
+  if (authFile && typeof authFile === "object") {
+    row.auth_file = authFile;
+    const account = accountForRow(row);
+    if (account) {
+      account.auth_file = authFile;
+      account.access_token = authFile.access_token || account.access_token || "";
+      account.refresh_token = authFile.refresh_token || account.refresh_token || "";
+      account.id_token = authFile.id_token || account.id_token || "";
+      account.session_token = authFile.session_token || account.session_token || "";
+      account.account_id = authFile.account_id || authFile.chatgpt_account_id || account.account_id || "";
+      account.chatgpt_account_id = authFile.chatgpt_account_id || authFile.account_id || account.chatgpt_account_id || "";
+      account.plan_type = authFile.plan_type || authFile.chatgpt_plan_type || account.plan_type || "";
+      account.last_refresh = authFile.last_refresh || new Date().toISOString();
+    }
+  }
+
+  const regPassword = result.registration_password || result.result?.registration_password;
+  if (regPassword) {
+    row.password = regPassword;
+    const account = accountForRow(row);
+    if (account) {
+      account.password = regPassword;
+    }
+  }
+
+  row.status = job.status || "running";
+  row.error = job.error || "";
+  row.error_code = job.error_code || "";
+  if (row.status === "failed" && isPhoneVerificationError(row.error_code, row.error)) {
+    row.error_code = "phone_verification_required";
+    row.error = "需要手机验证，已按失败处理";
+  }
+  row.error_hint = job.error_hint || "";
+  row.logs = job.logs || [];
+  state.jobs.set(row.id, {
+    status: row.status,
+    jobId: current.jobId || row.jobId || job.job_id || "",
+    error: row.error,
+    error_code: row.error_code,
+    error_hint: row.error_hint,
+    logs: row.logs,
+  });
+  if (row.status === "success" && row.auth_file) {
+    state.savedRefreshResults.set(accountEmailKey(row.email), {
+      email: row.email,
+      name: row.name || row.email,
+      auth_file: row.auth_file,
+    });
+  }
+  saveJson(STORAGE_KEYS.accounts, state.accounts);
+  saveQueue();
+}
+
+async function waitForJob(row, jobId) {
+  while (true) {
+    await sleep(2000);
+    const current = rowState(row);
+    const response = await fetch(`/client-api/cpa/login-status?job_id=${encodeURIComponent(jobId)}`, { headers: apiHeaders(), cache: "no-store" });
+    const data = await readJsonResponse(response, "读取任务失败");
+    if (!data.success) {
+      const details = parseErrorPayload(data, "读取任务失败");
+      const error = new Error(details.error || "读取任务失败");
+      error.details = details;
+      throw error;
+    }
+    const job = data.job || {};
+    applyJobToRow(row, job, current);
+    renderAll();
+    if (["success", "failed"].includes(row.status)) {
+      if (row.status === "failed") {
+        addLog(`${row.email} ${formatJobError(rowState(row))}`, "error", {
+          error_code: row.error_code || "login_failed",
+          email: row.email,
+        });
+      }
+      return row.status;
+    }
+  }
 }
 
 async function startLogin(row) {
@@ -654,6 +1054,10 @@ async function startLogin(row) {
     });
     return;
   }
+  if (!credentialSourceForRow(row, payload)) {
+    failRow(row, missingCredentialDetails(row));
+    return;
+  }
   row.status = "queued";
   row.error = "";
   row.error_code = "";
@@ -661,8 +1065,14 @@ async function startLogin(row) {
   state.jobs.set(row.id, { status: "queued", error: "", logs: [] });
   saveQueue();
   renderQueue();
-  addLog(`${row.email} 启动邮箱登录账号`, "info");
+  addLog(`${row.email} 检查取码邮箱`, "info", { step: "mail_credentials", email: row.email });
   try {
+    await checkUniqueProxy(row, payload);
+    row.status = "running";
+    state.jobs.set(row.id, { status: "running", error: "", logs: [] });
+    saveQueue();
+    renderQueue();
+    addLog(`${row.email} 启动邮箱登录账号`, "info", { step: "start", email: row.email });
     const response = await fetch("/client-api/cpa/login-start", {
       method: "POST",
       headers: apiHeaders(),
@@ -679,7 +1089,9 @@ async function startLogin(row) {
     row.status = data.job?.status || "queued";
     state.jobs.set(row.id, { status: row.status, jobId: row.jobId, error: "", logs: [] });
     saveQueue();
-    startPolling();
+    if (row.jobId) {
+      await waitForJob(row, row.jobId);
+    }
   } catch (error) {
     failRow(row, error.details || { error: error.message || "启动失败" });
   }
@@ -692,25 +1104,23 @@ async function startRows(rows) {
     return;
   }
   saveSettings();
+  await syncAccountsFromServer({ quiet: true });
   els.startSelected.disabled = true;
   els.retryFailed.disabled = true;
   const oldText = els.startSelected.textContent;
   els.startSelected.textContent = "执行中";
-  const concurrency = Math.min(2, Math.max(1, Number(els.loginConcurrency?.value || 1)));
-  let cursor = 0;
-  async function worker() {
-    while (cursor < rows.length) {
-      const row = rows[cursor];
-      cursor += 1;
+  state.runProxyIps = new Set();
+  if (els.loginConcurrency) els.loginConcurrency.value = "1";
+  addLog(`开始执行：${rows.length} 个账号，单账号顺序处理`, "info");
+  try {
+    for (const row of rows) {
       await startLogin(row);
     }
-  }
-  try {
-    await Promise.all(Array.from({ length: Math.min(concurrency, rows.length) }, () => worker()));
   } finally {
     els.startSelected.disabled = false;
     els.retryFailed.disabled = false;
     els.startSelected.textContent = oldText;
+    renderAll();
   }
 }
 
@@ -731,71 +1141,33 @@ async function pollJobs() {
     if (!current.jobId) continue;
     try {
       const response = await fetch(`/client-api/cpa/login-status?job_id=${encodeURIComponent(current.jobId)}`, { headers: apiHeaders(), cache: "no-store" });
-      const data = await response.json();
-      if (!response.ok || !data.success) throw new Error(data.error || "读取任务失败");
+      const data = await readJsonResponse(response, "读取任务失败");
+      if (!data.success) {
+        const details = parseErrorPayload(data, "读取任务失败");
+        const error = new Error(details.error || "读取任务失败");
+        error.details = details;
+        throw error;
+      }
       const job = data.job || {};
-      const oldCount = current.logs?.length || 0;
-      (job.logs || []).slice(oldCount).forEach((entry) => addLog(`${row.email} ${entry.message || ""}`, entry.level || "info", entry));
-      const result = job.result || {};
-      const authFile = result.auth_file || result.result?.auth_file || null;
-      if (authFile && typeof authFile === "object") {
-        row.auth_file = authFile;
-        const account = accountForRow(row);
-        if (account) {
-          account.auth_file = authFile;
-          account.access_token = authFile.access_token || account.access_token || "";
-          account.refresh_token = authFile.refresh_token || account.refresh_token || "";
-          account.id_token = authFile.id_token || account.id_token || "";
-          account.session_token = authFile.session_token || account.session_token || "";
-          account.account_id = authFile.account_id || authFile.chatgpt_account_id || account.account_id || "";
-          account.chatgpt_account_id = authFile.chatgpt_account_id || authFile.account_id || account.chatgpt_account_id || "";
-          account.plan_type = authFile.plan_type || authFile.chatgpt_plan_type || account.plan_type || "";
-          account.last_refresh = authFile.last_refresh || new Date().toISOString();
-        }
-      }
-      
-      const regPassword = result.registration_password || result.result?.registration_password;
-      if (regPassword) {
-        row.password = regPassword;
-        const account = accountForRow(row);
-        if (account) {
-          account.password = regPassword;
-        }
-      }
-      row.status = job.status || "running";
-      row.error = job.error || "";
-      row.error_code = job.error_code || "";
-      if (row.status === "failed" && isPhoneVerificationError(row.error_code, row.error)) {
-        row.error_code = "phone_verification_required";
-        row.error = "需要手机验证，已按失败处理";
-      }
-      row.error_hint = job.error_hint || "";
-      row.logs = job.logs || [];
-      if (job.error_hint && row.status === "failed") {
-        addLog(`${row.email} 建议：${job.error_hint}`, "warning");
-      }
+      applyJobToRow(row, job, current);
+    } catch (error) {
+      row.status = "failed";
+      const details = error.details || { error: error.message || "读取任务失败", error_code: "login_failed" };
+      row.error = details.error || "读取任务失败";
+      row.error_code = details.error_code || "login_failed";
+      row.error_hint = details.error_hint || "";
       state.jobs.set(row.id, {
-        status: row.status,
+        status: "failed",
         jobId: current.jobId,
         error: row.error,
         error_code: row.error_code,
         error_hint: row.error_hint,
-        logs: row.logs,
+        logs: current.logs || [],
       });
-      if (row.status === "success" && row.auth_file) {
-        state.savedRefreshResults.set(accountEmailKey(row.email), {
-          email: row.email,
-          name: row.name || row.email,
-          auth_file: row.auth_file,
-        });
-      }
-      saveJson(STORAGE_KEYS.accounts, state.accounts);
-      saveQueue();
-    } catch (error) {
-      row.status = "failed";
-      row.error = error.message || "读取任务失败";
-      state.jobs.set(row.id, { status: "failed", jobId: current.jobId, error: row.error, logs: current.logs || [] });
-      addLog(`${row.email} ${row.error}`, "error");
+      addLog(`${row.email} ${formatJobError(rowState(row))}`, "error", {
+        error_code: row.error_code,
+        email: row.email,
+      });
       saveQueue();
     }
   }
@@ -910,7 +1282,7 @@ function renderAll() {
 function normalizeServerAccount(item, source) {
   const email = String(item?.email || "").trim();
   if (!email) return null;
-  return {
+  const base = {
     id: String(source === "temp" ? `temp:${email.toLowerCase()}` : `microsoft:${email.toLowerCase()}`),
     email,
     name: email,
@@ -919,9 +1291,201 @@ function normalizeServerAccount(item, source) {
     category: String(item?.label || item?.category || "").trim(),
     auth_file: null,
   };
+  if (source === "temp") {
+    return {
+      ...base,
+      jwt: String(item?.jwt || ""),
+      base_url: String(item?.base_url || item?.baseUrl || ""),
+      site_password: String(item?.site_password || item?.sitePassword || ""),
+    };
+  }
+  return {
+    ...base,
+    password: String(item?.password || ""),
+    client_id: String(item?.client_id || ""),
+    refresh_token: String(item?.refresh_token || ""),
+  };
 }
 
-async function syncAccountsFromServer() {
+function isTempMailboxEmail(email) {
+  const domain = String(email || "").split("@")[1]?.toLowerCase() || "";
+  const microsoftDomains = new Set(["outlook.com", "hotmail.com", "live.com", "msn.com"]);
+  return Boolean(domain)
+    && (
+      domain.endsWith("wsphl.cfd")
+      || domain.endsWith("cmgptm.online")
+      || domain.includes("temp")
+      || !microsoftDomains.has(domain)
+    );
+}
+
+function tempEmailsNeedingCredentials() {
+  const emails = [];
+  state.queue.forEach((row) => {
+    const email = String(row.email || row.name || "").trim();
+    if (!email || !isTempMailboxEmail(email)) return;
+    const payload = loginPayload(row);
+    if (credentialSourceForRow(row, payload)) return;
+    emails.push(email.toLowerCase());
+  });
+  return [...new Set(emails)];
+}
+
+function mergeTempJwtResults(results, baseUrl, sitePassword) {
+  const imported = [];
+  results.forEach((item) => {
+    const email = String(item?.email || item?.address || "").trim().toLowerCase();
+    const jwt = String(item?.jwt || "").trim();
+    if (!email || !jwt) return;
+    imported.push(normalizeServerAccount({
+      email,
+      jwt,
+      base_url: baseUrl,
+      site_password: sitePassword,
+      label: "临时邮箱",
+    }, "temp"));
+  });
+  mergeServerAccountsSnapshot(imported.filter(Boolean));
+  saveJson(STORAGE_KEYS.accounts, state.accounts);
+  return imported.filter(Boolean);
+}
+
+async function importTempCredentialsToServer(items, baseUrl, sitePassword) {
+  if (!items.length) return;
+  const text = items.map((item) => [
+    item.email,
+    item.jwt,
+    baseUrl,
+    sitePassword,
+  ].join("----")).join("\n");
+  const response = await fetch("/api/temp-addresses/import", {
+    method: "POST",
+    headers: apiHeaders(),
+    body: JSON.stringify({
+      text,
+      replace_existing: true,
+    }),
+  });
+  await readJsonResponse(response, "导入临时邮箱失败");
+}
+
+async function syncTempCredentialsForQueue() {
+  saveSettings();
+  const baseUrl = els.tempSyncApi ? els.tempSyncApi.value.trim().replace(/\/+$/, "") : "";
+  const adminPassword = els.tempSyncAdminKey ? els.tempSyncAdminKey.value.trim() : "";
+  const sitePassword = els.tempSyncSitePassword ? els.tempSyncSitePassword.value.trim() : "";
+  if (!baseUrl || !adminPassword) {
+    toast("请填写临时邮箱 API 和管理员密钥");
+    addLog("临时邮箱同步配置不完整", "error", { error_code: "temp_sync_config_missing" });
+    return;
+  }
+  const emails = tempEmailsNeedingCredentials();
+  if (!emails.length) {
+    toast("队列里没有缺 JWT 的临时邮箱");
+    addLog("队列临时邮箱 JWT 已齐全", "success");
+    return;
+  }
+  const oldText = els.syncTempCredentials.textContent;
+  els.syncTempCredentials.disabled = true;
+  els.syncTempCredentials.textContent = "同步中";
+  addLog(`同步临时邮箱 JWT：${emails.length} 个`, "info");
+  try {
+    const response = await fetch("/client-api/temp-addresses/sync-jwts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        base_url: baseUrl,
+        admin_password: adminPassword,
+        site_password: sitePassword,
+        email_list: emails,
+      }),
+    });
+    const data = await readJsonResponse(response, "同步临时邮箱失败");
+    const results = Array.isArray(data.results) ? data.results : [];
+    const ok = results.filter((item) => item?.ok && item?.jwt);
+    const imported = mergeTempJwtResults(ok, baseUrl, sitePassword);
+    const failed = results.length - ok.length;
+    renderAll();
+    toast(`同步完成：${imported.length} 个`);
+    addLog(`临时邮箱同步完成：成功 ${imported.length}，失败 ${Math.max(0, failed)}`, imported.length ? "success" : "warning");
+    results
+      .filter((item) => !item?.ok)
+      .slice(0, 8)
+      .forEach((item) => addLog(`${item?.email || ""} 未找到 JWT`, "warning", { error_code: "mail_credentials_missing", email: item?.email || "" }));
+  } catch (error) {
+    const details = error.details || { error: error.message || "同步临时邮箱失败", error_code: "temp_sync_failed" };
+    addLog(formatJobError(details), "error", { error_code: details.error_code || "temp_sync_failed" });
+    toast("同步失败");
+  } finally {
+    els.syncTempCredentials.disabled = false;
+    els.syncTempCredentials.textContent = oldText;
+  }
+}
+
+async function importPickupCredentials() {
+  const text = els.pickupImportText ? els.pickupImportText.value.trim() : "";
+  if (!text) {
+    toast("请先粘贴 Outlook 四段取码资料");
+    addLog("Outlook 取码导入为空", "error", { error_code: "pickup_import_empty" });
+    return;
+  }
+  const oldText = els.importPickupCredentials.textContent;
+  els.importPickupCredentials.disabled = true;
+  els.importPickupCredentials.textContent = "导入中";
+  try {
+    const response = await fetch("/client-api/accounts/import-pickup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        replace_existing: true,
+      }),
+    });
+    const data = await readJsonResponse(response, "Outlook 取码导入失败");
+    const syncedAccounts = (data.accounts || []).map((item) => normalizeServerAccount(item, "microsoft")).filter(Boolean);
+    mergeServerAccountsSnapshot(syncedAccounts);
+    saveJson(STORAGE_KEYS.accounts, state.accounts);
+    els.pickupImportText.value = "";
+    renderAll();
+    toast(`导入 Outlook：新增 ${data.imported || 0}，更新 ${data.updated || 0}`);
+    addLog(`Outlook 取码导入完成：新增 ${data.imported || 0}，更新 ${data.updated || 0}`, "success");
+    (data.errors || []).slice(0, 5).forEach((item) => addLog(item, "warning", { error_code: "pickup_import_failed" }));
+  } catch (error) {
+    const details = error.details || { error: error.message || "Outlook 取码导入失败", error_code: "pickup_import_failed" };
+    addLog(formatJobError(details), "error", { error_code: details.error_code || "pickup_import_failed" });
+    toast("导入失败");
+  } finally {
+    els.importPickupCredentials.disabled = false;
+    els.importPickupCredentials.textContent = oldText;
+  }
+}
+
+function mergeServerAccountsSnapshot(items) {
+  const byId = new Map(state.accounts.map((account) => [account.id, account]));
+  items.forEach((item) => {
+    if (!item?.id) return;
+    const existing = byId.get(item.id);
+    if (existing) {
+      byId.set(item.id, {
+        ...existing,
+        ...item,
+        password: preferRealSecret(item.password, existing.password),
+        client_id: preferRealSecret(item.client_id, existing.client_id),
+        refresh_token: preferRealSecret(item.refresh_token, existing.refresh_token),
+        jwt: preferRealSecret(item.jwt, existing.jwt),
+        site_password: preferRealSecret(item.site_password, existing.site_password),
+        base_url: item.base_url || existing.base_url || "",
+        category: item.category || existing.category || "",
+        auth_file: existing.auth_file || item.auth_file || null,
+      });
+    } else {
+      byId.set(item.id, item);
+    }
+  });
+  state.accounts = [...byId.values()].sort((a, b) => String(a.email || "").localeCompare(String(b.email || "")));
+}
+
+async function syncAccountsFromServer({ quiet = false } = {}) {
   if (!rememberedAdminToken()) return;
   try {
     const [accountsResponse, tempResponse] = await Promise.all([
@@ -934,14 +1498,15 @@ async function syncAccountsFromServer() {
     ]);
     if (!accountsResponse.ok) throw new Error(accountsData.error || accountsResponse.statusText || "Failed to load Outlook accounts");
     if (!tempResponse.ok) throw new Error(tempData.error || tempResponse.statusText || "Failed to load temp accounts");
-    state.accounts = [
+    const syncedAccounts = [
       ...((accountsData.accounts || []).map((item) => normalizeServerAccount(item, "microsoft")).filter(Boolean)),
       ...((tempData.addresses || []).map((item) => normalizeServerAccount(item, "temp")).filter(Boolean)),
     ];
+    mergeServerAccountsSnapshot(syncedAccounts);
     saveJson(STORAGE_KEYS.accounts, state.accounts);
     renderAll();
   } catch (error) {
-    addLog(`Server sync failed: ${error.message || "unknown error"}`, "warning");
+    if (!quiet) addLog(`同步邮箱助手资料失败：${error.message || "unknown"}`, "warning");
   }
 }
 
@@ -988,6 +1553,16 @@ els.queueBody.addEventListener("change", (event) => {
   else state.selectedQueue.delete(row.dataset.id);
   renderQueue();
 });
+if (els.queueSelectAll) {
+  els.queueSelectAll.addEventListener("change", () => {
+    if (els.queueSelectAll.checked) {
+      state.queue.forEach((row) => state.selectedQueue.add(row.id));
+    } else {
+      state.selectedQueue.clear();
+    }
+    renderQueue();
+  });
+}
 els.queueBody.addEventListener("click", (event) => {
   const button = event.target.closest(".login-one");
   if (!button) return;
@@ -999,6 +1574,12 @@ els.startSelected.addEventListener("click", () => startRows(selectedQueueRows())
 els.retryFailed.addEventListener("click", () => startRows(selectedQueueRows({ failedOnly: true })));
 els.exportCpa.addEventListener("click", () => exportResults("cpa"));
 els.exportSub2.addEventListener("click", () => exportResults("sub2"));
+if (els.syncTempCredentials) {
+  els.syncTempCredentials.addEventListener("click", syncTempCredentialsForQueue);
+}
+if (els.importPickupCredentials) {
+  els.importPickupCredentials.addEventListener("click", importPickupCredentials);
+}
 els.clearQueue.addEventListener("click", () => {
   state.queue = [];
   state.selectedQueue.clear();
@@ -1006,7 +1587,7 @@ els.clearQueue.addEventListener("click", () => {
   saveQueue();
   renderQueue();
 });
-[els.useProxy, els.proxyUrl, els.loginStrategy, els.loginConcurrency, els.autoUpdateCpa, els.cpaBaseUrl, els.cpaManagementKey, els.taskMode].forEach((input) => {
+[els.useProxy, els.proxyUrl, els.loginStrategy, els.loginConcurrency, els.autoUpdateCpa, els.cpaBaseUrl, els.cpaManagementKey, els.taskMode, els.tempSyncApi, els.tempSyncAdminKey, els.tempSyncSitePassword].forEach((input) => {
   if (input) {
     input.addEventListener("input", saveSettings);
     input.addEventListener("change", saveSettings);

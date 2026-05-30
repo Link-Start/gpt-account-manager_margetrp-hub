@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GPT账号管理助手 - 凭证刷新</title>
-  <link rel="stylesheet" href="/styles.css?v=20260530-gpt-account-manager">
-  <link rel="stylesheet" href="/forge-theme.css?v=20260530-gpt-account-manager">
+  <link rel="stylesheet" href="/styles.css?v=20260530-fixed-reasons">
+  <link rel="stylesheet" href="/forge-theme.css?v=20260530-fixed-reasons">
 </head>
 <body>
   <div class="shell refresh-shell">
@@ -119,18 +119,34 @@
             </div>
             <input id="taskMode" type="hidden" value="login">
             <input id="loginStrategy" type="hidden" value="protocol">
-            <select id="loginConcurrency" style="flex: 0.55;">
-              <option value="1">并发 1</option>
-              <option value="2">并发 2</option>
-            </select>
+            <input id="loginConcurrency" type="hidden" value="1">
+            <span class="protocol-mode-pill">单账号执行</span>
           </div>
           <div class="refresh-options cpa-options">
             <label class="toggle">
               <input id="autoUpdateCpa" type="checkbox">
-              <span>自动更新 CPA</span>
+              <span>成功后同步 CPA</span>
             </label>
             <input id="cpaBaseUrl" placeholder="CPA 地址，例如 http://127.0.0.1:8317">
             <input id="cpaManagementKey" type="password" placeholder="CPA 管理密钥">
+          </div>
+          <div class="credential-hint-bar">
+            <strong>先自动匹配账号管理页已有取码资料。</strong>
+            <span>只有匹配不到时，Outlook 在下方补四段；临时邮箱从 Worker 同步 JWT。</span>
+            <a href="/?import=mailbox">导入邮箱</a>
+          </div>
+          <div class="pickup-import-panel">
+            <textarea id="pickupImportText" rows="2" spellcheck="false" placeholder="Outlook 取码四段：邮箱----密码----client_id----refresh_token，可一次粘贴多行"></textarea>
+            <button id="importPickupCredentials" type="button">导入 Outlook 取码</button>
+          </div>
+          <div class="refresh-options temp-sync-options">
+            <label class="toggle">
+              <span>临时邮箱同步</span>
+            </label>
+            <input id="tempSyncApi" type="url" placeholder="Temp API，例如 https://maip.wsphl.cfd">
+            <input id="tempSyncAdminKey" type="password" autocomplete="off" placeholder="管理员密钥">
+            <input id="tempSyncSitePassword" type="password" autocomplete="off" placeholder="站点密钥，可选">
+            <button id="syncTempCredentials" type="button">同步队列 JWT</button>
           </div>
           <div class="login-stats">
             <span>队列 <strong id="queueTotal">0</strong></span>
@@ -147,7 +163,7 @@
             <table class="login-table">
               <thead>
                 <tr>
-                  <th>选择</th>
+                  <th><label class="queue-select-all"><input id="queueSelectAll" class="abnormal-check" type="checkbox"><span>全选</span></label></th>
                   <th>账号</th>
                   <th>来源</th>
                   <th>状态</th>
@@ -177,6 +193,6 @@
     </main>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="/refresh.js?v=20260530-gpt-account-manager" defer></script>
+  <script src="/refresh.js?v=20260530-fixed-reasons" defer></script>
 </body>
 </html>

@@ -69,7 +69,7 @@ TEMP_ADDRESSES_FILE = DATA_DIR / "temp_addresses.json"
 REFRESH_RESULTS_FILE = DATA_DIR / "refresh_results.json"
 LOGIN_HISTORY_FILE = DATA_DIR / "login_history.json"
 LOGIN_DEBUG_DIR = DATA_DIR / "login_debug"
-APP_VERSION = "20260530-gpt-account-manager"
+APP_VERSION = "20260530-fixed-reasons"
 
 DEFAULT_HOST = os.environ.get("MAIL_PICKUP_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("MAIL_PICKUP_PORT", "8765"))
@@ -239,6 +239,16 @@ def mask_secret(value: str, keep: int = 4) -> str:
     if len(value) <= keep * 2:
         return "*" * len(value)
     return f"{value[:keep]}...{value[-keep:]}"
+
+
+def is_masked_secret(value: Any) -> bool:
+    text = coerce_text(value)
+    return bool(text and (set(text) <= {"*"} or "..." in text))
+
+
+def usable_secret(value: Any) -> bool:
+    text = coerce_text(value)
+    return bool(text and not is_masked_secret(text))
 
 
 def file_item_count(path: Path, key: str) -> int:
@@ -1699,7 +1709,12 @@ def request_proxy_url(payload: dict[str, Any] | None = None) -> str:
             os.environ.get("HTTP_PROXY"),
             os.environ.get("ALL_PROXY"),
         )
-    return sticky_proxy_url(normalize_proxy_url(raw), coerce_text(payload.get("job_id") or payload.get("jobId")))
+    return sticky_proxy_url(normalize_proxy_url(raw), coerce_text(
+        payload.get("proxy_session")
+        or payload.get("proxySession")
+        or payload.get("job_id")
+        or payload.get("jobId")
+    ))
 
 
 def require_login_proxy_url(payload: dict[str, Any]) -> str:
@@ -1842,6 +1857,21 @@ def probe_egress_trace(proxy_url: str = "") -> dict[str, str]:
         key, value = line.split("=", 1)
         data[key.strip()] = value.strip()
     return data
+
+
+def check_proxy_egress(payload: dict[str, Any]) -> dict[str, Any]:
+    proxy_url = require_login_proxy_url(dict(payload))
+    trace = probe_egress_trace(proxy_url)
+    ip = coerce_text(trace.get("ip"))
+    if not ip:
+        raise RuntimeError("代理出口检测失败：没有返回出口 IP")
+    return {
+        "success": True,
+        "ip": ip,
+        "loc": coerce_text(trace.get("loc")),
+        "colo": coerce_text(trace.get("colo")),
+        "proxy_session": coerce_text(payload.get("proxy_session") or payload.get("proxySession")),
+    }
 
 
 def http_request_form_json(
@@ -2128,6 +2158,14 @@ def classify_login_exception(exc: Exception) -> dict[str, Any]:
             "status": status,
             "retryable": retryable,
         }
+    if "unauthorized" in lowered or status == 401:
+        return {
+            "message": "授权失败或凭证已失效，已按失败处理。",
+            "code": "authorization_failed",
+            "hint": "目标接口返回 Unauthorized。请检查 CPA 管理密钥、OAuth 授权会话或已保存凭证是否已失效。",
+            "status": status,
+            "retryable": True,
+        }
     if (
         "mfa_required" in lowered
         or "phone verification" in lowered
@@ -2141,6 +2179,61 @@ def classify_login_exception(exc: Exception) -> dict[str, Any]:
             "message": "需要手机验证，已按失败处理。",
             "code": "phone_verification_required",
             "hint": "这个账号当前登录链路要求手机验证码，不属于邮箱接码；先放到失败里，后续换出口或换号处理。",
+            "status": status,
+            "retryable": False,
+        }
+    if (
+        "deactivated" in lowered
+        or "account disabled" in lowered
+        or "disabled account" in lowered
+        or "banned" in lowered
+        or "suspended" in lowered
+        or "deleted account" in lowered
+        or "account deleted" in lowered
+        or "账号被封" in message
+        or "账号封禁" in message
+        or "账号停用" in message
+        or "已停用" in message
+        or "被禁用" in message
+    ):
+        return {
+            "message": "账号被封禁或停用，已按失败处理。",
+            "code": "account_banned",
+            "hint": "目标站返回账号停用/封禁/禁用信号，这类账号不再继续自动刷新。",
+            "status": status,
+            "retryable": False,
+        }
+    if (
+        "invalid verification code" in lowered
+        or "invalid email code" in lowered
+        or "invalid otp" in lowered
+        or "incorrect code" in lowered
+        or "code expired" in lowered
+        or "expired code" in lowered
+        or "email code verify failed" in lowered
+        or "验证码无效" in message
+        or "验证码错误" in message
+        or "验证码已过期" in message
+        or "验证码过期" in message
+    ):
+        return {
+            "message": "验证码无效或已过期，已按失败处理。",
+            "code": "verification_code_invalid",
+            "hint": "已经进入邮箱验证码阶段，但提交的验证码被目标站拒绝；通常是验证码过期、重复使用或邮箱里取到旧码。",
+            "status": status,
+            "retryable": True,
+        }
+    if (
+        "user not found" in lowered
+        or "account not found" in lowered
+        or "no account" in lowered
+        or "账号不存在" in message
+        or "账户不存在" in message
+    ):
+        return {
+            "message": "账号不存在或未注册，已按失败处理。",
+            "code": "account_not_found",
+            "hint": "目标站没有识别出这个邮箱对应的登录账号。",
             "status": status,
             "retryable": False,
         }
@@ -4710,7 +4803,10 @@ def find_latest_code(messages: list[dict[str, Any]], *, after_ts: float = 0) -> 
 
 
 def fetch_login_verification_code(payload: dict[str, Any], *, since: float = 0, attempts: int = 12, delay: float = 5) -> str:
-    for _ in range(max(1, attempts)):
+    job_id = coerce_text(payload.get("job_id"))
+    total_attempts = max(1, attempts)
+    last_summary = ""
+    for attempt in range(1, total_attempts + 1):
         data = fetch_transient_client_mail({
             "source": "all",
             "provider": "auto",
@@ -4720,10 +4816,34 @@ def fetch_login_verification_code(payload: dict[str, Any], *, since: float = 0, 
             "accounts": payload.get("accounts", []),
             "temp_addresses": payload.get("temp_addresses", []),
         })
+        results = data.get("results", []) if isinstance(data.get("results"), list) else []
+        errors = data.get("errors", []) if isinstance(data.get("errors"), list) else []
+        message_count = len(data.get("messages", []) if isinstance(data.get("messages"), list) else [])
+        result_parts = []
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            result_parts.append(
+                f"{result.get('email') or '-'}:{'ok' if result.get('ok') else 'error'}/{len(result.get('messages') or [])}"
+            )
+        latest = (data.get("messages") or [{}])[0] if data.get("messages") else {}
+        latest_subject = coerce_text(latest.get("subject"))[:80] if isinstance(latest, dict) else ""
+        latest_codes = latest.get("codes") if isinstance(latest, dict) else []
+        last_summary = (
+            f"attempt {attempt}/{total_attempts}, sources={'; '.join(result_parts) or 'none'}, "
+            f"messages={message_count}, latest={latest_subject or '-'}, codes={len(latest_codes or [])}, "
+            f"errors={'; '.join(coerce_text(error)[:120] for error in errors[:2]) or '-'}"
+        )
+        if job_id and (attempt == 1 or attempt == total_attempts or attempt % 4 == 0 or errors):
+            append_login_log(job_id, f"邮箱验证码查收：{last_summary}", "info" if message_count else "warning", "mail_code_poll")
         code = find_latest_code(data.get("messages", []), after_ts=since)
         if code:
+            if job_id:
+                append_login_log(job_id, "已从邮箱取到 6 位验证码", "success", "mail_code_poll")
             return code
         time.sleep(max(1, delay))
+    if job_id and last_summary:
+        append_login_log(job_id, f"邮箱验证码查收结束，仍未找到可提交的 6 位验证码：{last_summary}", "warning", "mail_code_missing")
     return ""
 
 
@@ -6012,6 +6132,25 @@ def start_cpa_login_job(payload: dict[str, Any]) -> dict[str, Any]:
     }
     with LOGIN_JOBS_LOCK:
         LOGIN_JOBS[job_id] = job
+    if payload.pop("_allow_stored_mail_credentials", False):
+        summary = hydrate_login_mail_credentials(payload)
+        if summary.get("added") or summary.get("updated"):
+            append_login_log(
+                job_id,
+                (
+                    "邮箱取码凭证已从服务端补齐："
+                    f"Outlook {summary.get('microsoft', 0)}，临时邮箱 {summary.get('temp', 0)}"
+                ),
+                "info",
+                "mail_credentials",
+            )
+    counts = login_mail_credential_counts(payload)
+    append_login_log(
+        job_id,
+        f"邮箱取码凭证：Outlook {counts.get('microsoft', 0)}，临时邮箱 {counts.get('temp', 0)}",
+        "info" if counts.get("total", 0) else "warning",
+        "mail_credentials",
+    )
     thread = threading.Thread(target=run_cpa_login_job, args=(job_id, payload), daemon=True)
     thread.start()
     return {"success": True, "job": login_job_public(job)}
@@ -6023,6 +6162,82 @@ def get_cpa_login_job(job_id: str) -> dict[str, Any]:
         if not job:
             raise RuntimeError("登录任务不存在")
         return {"success": True, "job": login_job_public(job)}
+
+
+def login_mail_credential_counts(payload: dict[str, Any]) -> dict[str, int]:
+    microsoft = 0
+    for item in payload.get("accounts", []):
+        if not isinstance(item, dict):
+            continue
+        if usable_secret(item.get("client_id")) and usable_secret(item.get("refresh_token")):
+            microsoft += 1
+    temp = 0
+    for item in payload.get("temp_addresses", []):
+        if not isinstance(item, dict):
+            continue
+        if usable_secret(item.get("jwt")):
+            temp += 1
+    return {"microsoft": microsoft, "temp": temp, "total": microsoft + temp}
+
+
+def hydrate_login_mail_credentials(payload: dict[str, Any]) -> dict[str, int]:
+    email_addr = coerce_text(payload.get("email")).lower()
+    if "@" not in email_addr:
+        return {"microsoft": 0, "temp": 0, "added": 0, "updated": 0}
+    accounts = [item for item in payload.get("accounts", []) if isinstance(item, dict)]
+    temp_addresses = [item for item in payload.get("temp_addresses", []) if isinstance(item, dict)]
+    added = 0
+    updated = 0
+
+    def same_email(item: dict[str, Any]) -> bool:
+        return coerce_text(item.get("email")).lower() == email_addr
+
+    if not any(same_email(item) and usable_secret(item.get("client_id")) and usable_secret(item.get("refresh_token")) for item in accounts):
+        stored = load_accounts().get(email_addr)
+        if stored and usable_secret(stored.client_id) and usable_secret(stored.refresh_token):
+            stored_item = {
+                "email": stored.email,
+                "password": stored.password,
+                "client_id": stored.client_id,
+                "refresh_token": stored.refresh_token,
+                "label": stored.label,
+            }
+            replaced = False
+            for index, item in enumerate(accounts):
+                if same_email(item):
+                    accounts[index] = {**item, **stored_item}
+                    replaced = True
+                    updated += 1
+                    break
+            if not replaced:
+                accounts.append(stored_item)
+                added += 1
+
+    if not any(same_email(item) and usable_secret(item.get("jwt")) for item in temp_addresses):
+        stored_temp = load_temp_addresses().get(email_addr)
+        if stored_temp and usable_secret(stored_temp.jwt):
+            stored_item = {
+                "email": stored_temp.email,
+                "jwt": stored_temp.jwt,
+                "base_url": stored_temp.base_url or TEMP_WORKER_URL,
+                "site_password": stored_temp.site_password,
+                "label": stored_temp.label,
+            }
+            replaced = False
+            for index, item in enumerate(temp_addresses):
+                if same_email(item):
+                    temp_addresses[index] = {**item, **stored_item}
+                    replaced = True
+                    updated += 1
+                    break
+            if not replaced:
+                temp_addresses.append(stored_item)
+                added += 1
+
+    payload["accounts"] = accounts
+    payload["temp_addresses"] = temp_addresses
+    counts = login_mail_credential_counts(payload)
+    return {**counts, "added": added, "updated": updated}
 
 
 def transient_mail_accounts(payload: dict[str, Any]) -> tuple[list[MailAccount], list[str]]:
@@ -6039,7 +6254,7 @@ def transient_mail_accounts(payload: dict[str, Any]) -> tuple[list[MailAccount],
         email_addr = coerce_text(item.get("email"))
         client_id = coerce_text(item.get("client_id"))
         refresh_token = coerce_text(item.get("refresh_token"))
-        if "@" not in email_addr or not client_id or not refresh_token:
+        if "@" not in email_addr or not usable_secret(client_id) or not usable_secret(refresh_token):
             errors.append(f"Account {idx}: missing email/client_id/refresh_token")
             continue
         accounts.append(MailAccount(
@@ -6066,6 +6281,9 @@ def transient_temp_addresses(payload: dict[str, Any]) -> tuple[list[TempAddress]
         email_addr = coerce_text(item.get("email"))
         if "@" not in email_addr:
             errors.append(f"Temp address {idx}: invalid email")
+            continue
+        if not usable_secret(item.get("jwt")):
+            errors.append(f"Temp address {idx}: missing jwt")
             continue
         base_url = normalize_temp_worker_url(coerce_text(item.get("base_url") or item.get("baseUrl") or TEMP_WORKER_URL))
         site_password = coerce_text(item.get("site_password") or item.get("sitePassword") or TEMP_SITE_PASSWORD)
@@ -6236,6 +6454,75 @@ def extract_admin_jwts(payload: dict[str, Any]) -> dict[str, Any]:
                 "error": error,
             })
     return {"results": results, "count": len(results)}
+
+
+def sync_temp_jwts_from_worker(payload: dict[str, Any]) -> dict[str, Any]:
+    result = extract_admin_jwts(payload)
+    base_url = normalize_temp_worker_url(coerce_text(payload.get("base_url")).rstrip("/"))
+    site_password = coerce_text(payload.get("site_password"))
+    addresses = load_temp_addresses()
+    imported = 0
+    updated = 0
+    for item in result.get("results", []):
+        if not isinstance(item, dict) or not item.get("ok") or not usable_secret(item.get("jwt")):
+            continue
+        email_addr = coerce_text(item.get("address") or item.get("email")).lower()
+        if "@" not in email_addr:
+            continue
+        existing = addresses.get(email_addr)
+        addresses[email_addr] = TempAddress(
+            email=email_addr,
+            jwt=coerce_text(item.get("jwt")),
+            base_url=base_url,
+            site_password=site_password,
+            label="临时邮箱",
+            created_at=existing.created_at if existing else iso_now(),
+            updated_at=iso_now(),
+        )
+        if existing:
+            updated += 1
+        else:
+            imported += 1
+    if imported or updated:
+        save_temp_addresses(addresses)
+    return {
+        **result,
+        "success": True,
+        "imported": imported,
+        "updated": updated,
+        "addresses": [addr.public() for addr in addresses.values()],
+    }
+
+
+def import_pickup_accounts(payload: dict[str, Any]) -> dict[str, Any]:
+    incoming, errors = parse_account_lines(str(payload.get("text", "")))
+    accounts = load_accounts()
+    imported = 0
+    updated = 0
+    skipped = 0
+    replace_existing = True
+    for account in incoming:
+        key = account.email.lower()
+        existing = accounts.get(key)
+        if existing:
+            if not replace_existing:
+                skipped += 1
+                continue
+            account.created_at = existing.created_at
+            updated += 1
+        else:
+            imported += 1
+        accounts[key] = account
+    if imported or updated:
+        save_accounts(accounts)
+    return {
+        "success": True,
+        "imported": imported,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+        "accounts": [acc.public() for acc in accounts.values()],
+    }
 
 
 def public_pool_rows_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -6495,9 +6782,44 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_json({"success": False, "error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
             return
+        if self.path == "/client-api/proxy/check":
+            try:
+                self.send_json(check_proxy_egress(self.read_json()))
+            except Exception as exc:
+                details = classify_login_exception(exc)
+                self.send_json({
+                    "success": False,
+                    "error": details.get("message", str(exc))[:500],
+                    "error_code": details.get("code", "proxy_check_failed"),
+                    "error_hint": details.get("hint", ""),
+                }, status=HTTPStatus.BAD_REQUEST)
+            return
+        if self.path == "/client-api/temp-addresses/sync-jwts":
+            try:
+                self.send_json(sync_temp_jwts_from_worker(self.read_json()))
+            except Exception as exc:
+                self.send_json({
+                    "success": False,
+                    "error": str(exc)[:500],
+                    "error_code": "temp_sync_failed",
+                }, status=HTTPStatus.BAD_REQUEST)
+            return
+        if self.path == "/client-api/accounts/import-pickup":
+            try:
+                self.send_json(import_pickup_accounts(self.read_json()))
+            except Exception as exc:
+                self.send_json({
+                    "success": False,
+                    "error": str(exc)[:500],
+                    "error_code": "pickup_import_failed",
+                }, status=HTTPStatus.BAD_REQUEST)
+            return
         if self.path == "/client-api/cpa/login-start":
             try:
-                self.send_json(start_cpa_login_job(self.read_json()))
+                payload = self.read_json()
+                if self.admin_request_authorized():
+                    payload["_allow_stored_mail_credentials"] = True
+                self.send_json(start_cpa_login_job(payload))
             except Exception as exc:
                 details = classify_login_exception(exc)
                 self.send_json({
