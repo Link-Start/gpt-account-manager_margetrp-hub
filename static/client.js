@@ -393,6 +393,88 @@ function humanizeMailError(value) {
   return raw;
 }
 
+const MAIL_ERROR_LABELS = {
+  dns_failed: "DNS 解析失败",
+  temp_invalid_credential: "临时邮箱 JWT 无效",
+  temp_config_missing: "临时邮箱配置缺失",
+  temp_api_http_error: "临时邮箱 API 异常",
+  outlook_credential_format: "Outlook 凭证格式错误",
+  outlook_client_mismatch: "Outlook client_id 不匹配",
+  outlook_refresh_expired: "Outlook RT 过期",
+  graph_token_failed: "Graph 授权失败",
+  imap_token_failed: "IMAP 授权失败",
+  graph_fetch_failed: "Graph 收信失败",
+  imap_fetch_failed: "IMAP 收信失败",
+  network_tls_eof: "网络连接被截断",
+  network_failed: "网络请求失败",
+  mail_fetch_failed: "收信失败",
+};
+
+function sourceForResult(result) {
+  const source = String(result?.source || "").toLowerCase();
+  if (source === "temp") return "temp";
+  if (source === "microsoft") return "microsoft";
+  const provider = String(result?.provider || "").toLowerCase();
+  if (provider.includes("temp") || provider.includes("cf")) return "temp";
+  return "";
+}
+
+function statusClass(status) {
+  if (status === "ok" || status === "success") return "success";
+  if (status === "error" || status === "failed") return "failed";
+  if (status === "needs-code") return "needs-code";
+  if (status === "running") return "running";
+  return "idle";
+}
+
+function statusLabel(account) {
+  const status = String(account?.last_status || "idle");
+  if (status === "ok" || status === "success") return "已同步";
+  if (status === "error" || status === "failed") return account?.last_error_label || MAIL_ERROR_LABELS[account?.last_error_code] || "失败";
+  return "未检查";
+}
+
+function normalizeFetchDiagnostic(result) {
+  const rawError = (result?.errors || []).filter(Boolean).join("；") || result?.error || "";
+  const errorCode = String(result?.error_code || "").trim();
+  const errorLabel = String(result?.error_label || MAIL_ERROR_LABELS[errorCode] || "").trim();
+  const errorHint = String(result?.error_hint || "").trim();
+  const ok = Boolean(result?.ok);
+  return {
+    source: sourceForResult(result),
+    email: String(result?.email || "").toLowerCase(),
+    last_status: ok ? "ok" : "error",
+    last_check_at: result?.checked_at || new Date().toISOString(),
+    last_message_count: Number(result?.message_count ?? (result?.messages || []).length ?? 0),
+    last_error: ok ? "" : humanizeMailError(rawError || result?.error_label || "收信失败"),
+    last_error_code: ok ? "" : errorCode,
+    last_error_label: ok ? "" : (errorLabel || "收信失败"),
+    last_error_hint: ok ? "" : (errorHint || humanizeMailError(rawError)),
+  };
+}
+
+function applyFetchDiagnostics(results) {
+  if (!Array.isArray(results) || !results.length) return { ok: 0, failed: 0 };
+  let changed = false;
+  let ok = 0;
+  let failed = 0;
+  results.forEach((result) => {
+    const diagnostic = normalizeFetchDiagnostic(result);
+    if (!diagnostic.email) return;
+    if (diagnostic.last_status === "ok") ok += 1;
+    else failed += 1;
+    const account = state.accounts.find((item) => {
+      const sameEmail = String(item.email || "").toLowerCase() === diagnostic.email;
+      return sameEmail && (!diagnostic.source || item.source === diagnostic.source);
+    });
+    if (!account) return;
+    Object.assign(account, diagnostic);
+    changed = true;
+  });
+  if (changed) saveJson(STORAGE_KEYS.accounts, state.accounts);
+  return { ok, failed };
+}
+
 function normalizeUrl(value) {
   return String(value || "").trim().replace(/\/+$/, "");
 }
@@ -618,6 +700,7 @@ function addClientLog(message, type = "info") {
 function normalizeServerMailbox(item, source) {
   const email = String(item?.email || "").trim();
   if (!email) return null;
+  const status = item?.last_status || "idle";
   const category = String(item?.label || item?.category || "").trim();
   if (source === "temp") {
     return {
@@ -632,8 +715,12 @@ function normalizeServerMailbox(item, source) {
       created_at: item?.created_at || "",
       updated_at: item?.updated_at || "",
       last_check_at: item?.last_check_at || "",
-      last_status: item?.last_status || "idle",
+      last_status: status,
       last_error: item?.last_error || "",
+      last_error_code: item?.last_error_code || "",
+      last_error_label: item?.last_error_label || "",
+      last_error_hint: item?.last_error_hint || "",
+      last_message_count: Number(item?.last_message_count || 0),
       selected: true,
     };
   }
@@ -649,8 +736,12 @@ function normalizeServerMailbox(item, source) {
     created_at: item?.created_at || "",
     updated_at: item?.updated_at || "",
     last_check_at: item?.last_check_at || "",
-    last_status: item?.last_status || "idle",
+    last_status: status,
     last_error: item?.last_error || "",
+    last_error_code: item?.last_error_code || "",
+    last_error_label: item?.last_error_label || "",
+    last_error_hint: item?.last_error_hint || "",
+    last_message_count: Number(item?.last_message_count || 0),
     selected: true,
   };
 }
@@ -1057,18 +1148,35 @@ function renderAccounts() {
     return;
   }
   els.mailboxList.className = "mailbox-list";
-  els.mailboxList.innerHTML = pageAccounts.map((account) => `
-    <div class="mailbox-row" data-id="${escapeHtml(account.id)}">
+  els.mailboxList.innerHTML = pageAccounts.map((account) => {
+    const stateClass = statusClass(account.last_status);
+    const sourceClass = account.source === "temp" ? "temp" : "ms";
+    const sourceText = account.source === "temp" ? "临时" : "Outlook";
+    const checked = account.last_check_at ? ` · ${formatTime(account.last_check_at)}` : "";
+    const count = Number(account.last_message_count || 0);
+    const countText = account.last_status === "ok" ? ` · ${count} 封` : "";
+    const title = [account.last_error_label, account.last_error, account.last_error_hint].filter(Boolean).join(" · ");
+    const diagnosis = account.last_status === "error"
+      ? `<em class="mailbox-diagnosis" title="${escapeHtml(title)}">${escapeHtml(account.last_error_label || "收信失败")}：${escapeHtml(account.last_error_hint || account.last_error || "请检查凭证或网络")}</em>`
+      : `<em>${escapeHtml(statusLabel(account))}${escapeHtml(countText)}${escapeHtml(checked)}</em>`;
+    return `
+    <div class="mailbox-row refresh-state-${escapeHtml(stateClass)}" data-id="${escapeHtml(account.id)}">
       <label class="mailbox-check">
         <input type="checkbox" ${state.selected.has(account.id) ? "checked" : ""}>
         <span>
           <strong>${escapeHtml(account.email)}</strong>
+          <small class="mailbox-meta">
+            <b class="source-badge ${sourceClass}">${sourceText}</b>
+            <b class="source-badge refresh-badge ${stateClass}">${escapeHtml(statusLabel(account))}</b>
+          </small>
+          ${diagnosis}
         </span>
       </label>
       <select>${accountCategoryOptions(account.category || "")}</select>
       <button class="icon danger" type="button" aria-label="删除">×</button>
     </div>
-  `).join("");
+  `;
+  }).join("");
 }
 
 function mailKey(message) {
@@ -2299,15 +2407,28 @@ async function syncMail() {
     if (!response.ok) throw new Error(data.error || response.statusText);
     setInlineProgress(els.mailProgress, 72, "处理中");
     mergeMessages(data.messages || []);
+    const diagnosticCounts = applyFetchDiagnostics(data.results || []);
     const errors = [
       ...(data.errors || []),
-      ...(data.results || []).flatMap((result) => result.ok ? [] : (result.errors || [])),
+      ...(data.results || []).flatMap((result) => result.ok ? [] : [
+        result.error_label || result.error_code || result.error || (result.errors || [])[0],
+      ]),
     ].map(humanizeMailError).filter(Boolean);
+    const summary = data.summary || {};
+    const okCount = Number(summary.ok ?? diagnosticCounts.ok ?? 0);
+    const failedCount = Number(summary.failed ?? diagnosticCounts.failed ?? errors.length);
+    const messageCount = Number(summary.messages ?? (data.messages || []).length);
     els.statusText.textContent = errors.length
-      ? `刷新完成，有 ${errors.length} 个错误：${String(errors[0]).slice(0, 120)}`
-      : `刷新完成：${new Date().toLocaleTimeString()}`;
+      ? `刷新完成：成功 ${okCount}，失败 ${failedCount}，新收 ${messageCount} 封；首个原因：${String(errors[0]).slice(0, 90)}`
+      : `刷新完成：成功 ${okCount}，新收 ${messageCount} 封`;
+    (data.results || []).filter((result) => !result.ok).slice(0, 12).forEach((result) => {
+      const label = result.error_label || result.error_code || "收信失败";
+      const hint = result.error_hint || humanizeMailError((result.errors || [])[0] || result.error || "");
+      addClientLog(`${result.email || "未知邮箱"}：${label}${hint ? `，${hint}` : ""}`, "error");
+    });
     toast(errors.length ? "刷新完成，但有邮箱失败" : (useServerStoredAccounts ? "已用服务端凭证刷新" : "刷新完成"));
     state.page = 1;
+    renderAccounts();
     renderMessages();
     setInlineProgress(els.mailProgress, 100, "完成");
   } catch (error) {

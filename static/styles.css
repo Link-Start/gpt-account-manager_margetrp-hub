@@ -1024,9 +1024,9 @@ button:disabled {
 .mailbox-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 22px;
-  align-items: center;
+  align-items: start;
   gap: 4px;
-  padding: 4px 5px;
+  padding: 5px 6px;
   border: 1px solid rgba(209, 224, 244, 0.78);
   border-radius: 7px;
   background: rgba(255, 255, 255, 0.62);
@@ -1058,7 +1058,7 @@ button:disabled {
 .mailbox-check {
   min-width: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 5px;
 }
 
@@ -1071,6 +1071,8 @@ button:disabled {
 
 .mailbox-check span {
   min-width: 0;
+  display: grid;
+  gap: 2px;
 }
 
 .mailbox-check strong,
@@ -1091,6 +1093,24 @@ button:disabled {
   color: var(--muted);
   font-size: 11px;
   font-style: normal;
+}
+
+.mailbox-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.mailbox-diagnosis {
+  display: -webkit-box !important;
+  white-space: normal !important;
+  line-height: 1.3;
+  color: #b33b51 !important;
+  font-weight: 750;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .source-badge {

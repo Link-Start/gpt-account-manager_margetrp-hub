@@ -1,5 +1,9 @@
 # GPT账号管理助手
 
+演示地址：<https://mail.wsphl.cfd/>
+
+仓库地址：<https://github.com/margetrp-hub/gpt-account-manager>
+
 我做这个项目，不是为了让管理员先把一堆凭证放到服务器里，然后只给某一个人用。它更像一个批量账号管理工作台：普通用户自己导入邮箱资料，自己收验证码，自己把需要刷新的账号推进队列；管理员只负责站点维护、临时邮箱提取、CPA 仓管和必要的批量整理。
 
 它现在主要处理几类事情：
@@ -10,8 +14,6 @@
 - 账号分组、封禁/异常标记、刷新队列管理。
 - CPA / CLIProxyAPI 仓管巡检，识别 RT 失效、会话失效、封禁、风控、额度耗尽、非 OpenAI 凭证等状态。
 - OpenAI OAuth 凭证刷新，并导出 CPA / Sub2API 可用的 auth JSON。
-
-仓库地址：<https://github.com/margetrp-hub/gpt-account-manager>
 
 ## 我希望它解决的问题
 

@@ -70,7 +70,7 @@ TEMP_ADDRESSES_FILE = DATA_DIR / "temp_addresses.json"
 REFRESH_RESULTS_FILE = DATA_DIR / "refresh_results.json"
 LOGIN_HISTORY_FILE = DATA_DIR / "login_history.json"
 LOGIN_DEBUG_DIR = DATA_DIR / "login_debug"
-APP_VERSION = "20260531-open-source-docs"
+APP_VERSION = "20260531-mail-diagnostics"
 
 DEFAULT_HOST = os.environ.get("MAIL_PICKUP_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("MAIL_PICKUP_PORT", "8765"))
@@ -198,6 +198,10 @@ class MailAccount:
     last_check_at: str = ""
     last_status: str = "idle"
     last_error: str = ""
+    last_error_code: str = ""
+    last_error_label: str = ""
+    last_error_hint: str = ""
+    last_message_count: int = 0
 
     def public(self) -> dict[str, Any]:
         data = asdict(self)
@@ -219,6 +223,10 @@ class TempAddress:
     last_check_at: str = ""
     last_status: str = "idle"
     last_error: str = ""
+    last_error_code: str = ""
+    last_error_label: str = ""
+    last_error_hint: str = ""
+    last_message_count: int = 0
 
     def public(self) -> dict[str, Any]:
         data = asdict(self)
@@ -1447,10 +1455,105 @@ def extract_header_value(raw: str, header: str) -> str:
     return re.sub(r"\s+", " ", match.group(1)).strip()
 
 
+MAIL_FETCH_ERROR_LABELS = {
+    "dns_failed": "DNS 解析失败",
+    "temp_invalid_credential": "临时邮箱 JWT 无效",
+    "temp_config_missing": "临时邮箱配置缺失",
+    "temp_api_http_error": "临时邮箱 API 异常",
+    "outlook_credential_format": "Outlook 凭证格式错误",
+    "outlook_client_mismatch": "Outlook client_id 不匹配",
+    "outlook_refresh_expired": "Outlook RT 过期",
+    "graph_token_failed": "Graph 授权失败",
+    "imap_token_failed": "IMAP 授权失败",
+    "graph_fetch_failed": "Graph 收信失败",
+    "imap_fetch_failed": "IMAP 收信失败",
+    "network_tls_eof": "网络连接被截断",
+    "network_failed": "网络请求失败",
+    "mail_fetch_failed": "收信失败",
+}
+
+
+def classify_mail_fetch_error(raw: str, source: str = "") -> dict[str, Any]:
+    message = str(raw or "").strip()
+    lowered = message.lower()
+    code = "mail_fetch_failed"
+    hint = "请检查该邮箱对应的取信凭证和网络出口后重试。"
+    retryable = True
+    if "invalid address credential" in lowered or "jwt/地址凭证无效" in message or ("401" in lowered and source == "temp"):
+        code = "temp_invalid_credential"
+        hint = "导入的 JWT 不是这个临时邮箱对应的地址凭证，或已经过期；请从临时邮箱后台重新提取该邮箱的 JWT。"
+        retryable = False
+    elif "temp address requires" in lowered or "missing jwt" in lowered or "缺少 api 地址" in message:
+        code = "temp_config_missing"
+        hint = "临时邮箱需要同时有邮箱、JWT 和 API 地址；请补齐后再刷新。"
+        retryable = False
+    elif "临时邮箱 api 返回 http" in lowered or ("http" in lowered and source == "temp" and any(token in lowered for token in ["401", "403", "404", "500"])):
+        code = "temp_api_http_error"
+        hint = "目标 API 拒绝了本次取信请求；请检查 API 地址、站点密码或该邮箱的 JWT。"
+    elif (
+        "服务器 dns 解析失败" in message
+        or "temporary failure in name resolution" in lowered
+        or "name or service not known" in lowered
+        or "getaddrinfo failed" in lowered
+        or "dns lookup failed" in lowered
+    ):
+        code = "dns_failed"
+        hint = "请求由服务器发起，不是用户浏览器发起；请检查 VPS DNS、代理 DNS 或目标域名是否正确。"
+    elif "aadsts9002313" in lowered or "malformed or invalid" in lowered or "invalid_request" in lowered:
+        code = "outlook_credential_format"
+        hint = "Outlook 导入应为：邮箱----密码----client_id----refresh_token；请确认没有少段、串行或复制到错误字段。"
+        retryable = False
+    elif "client does not exist" in lowered or "not enabled for consumers" in lowered or "invalid_client" in lowered:
+        code = "outlook_client_mismatch"
+        hint = "client_id 与 refresh_token 不是同一套，或这个 client_id 不支持个人微软邮箱。"
+        retryable = False
+    elif "invalid_grant" in lowered or "expired" in lowered or "revoked" in lowered:
+        code = "outlook_refresh_expired"
+        hint = "Outlook refresh_token 已过期或被撤销，需要重新生成后导入。"
+        retryable = False
+    elif "graph token failed" in lowered:
+        code = "graph_token_failed"
+        hint = "Graph 获取访问令牌失败；如果自动模式会继续尝试 IMAP，仍失败时请重建 Outlook OAuth 凭证。"
+    elif "imap token failed" in lowered:
+        code = "imap_token_failed"
+        hint = "IMAP 获取访问令牌失败；请确认 Outlook 凭证支持 IMAP.AccessAsUser.All 或换新凭证。"
+    elif "graph:" in lowered:
+        code = "graph_fetch_failed"
+        hint = "Graph 收信链路失败；自动模式可继续看 IMAP 是否成功。"
+    elif "imap:" in lowered:
+        code = "imap_fetch_failed"
+        hint = "IMAP 收信链路失败；请确认微软邮箱 IMAP 权限和网络可用。"
+    elif "unexpected_eof_while_reading" in lowered or "incompleteread" in lowered or "eof occurred" in lowered:
+        code = "network_tls_eof"
+        hint = "TLS/代理连接中途断开；通常是代理或目标网络不稳定，建议换出口后重试。"
+    elif "timed out" in lowered or "connection reset" in lowered or "connection refused" in lowered or "urlopen error" in lowered:
+        code = "network_failed"
+        hint = "服务器到目标站的网络请求失败；请检查 VPS 网络或代理。"
+    return {
+        "error_code": code,
+        "error_label": MAIL_FETCH_ERROR_LABELS.get(code, "收信失败"),
+        "error_hint": hint,
+        "retryable": retryable,
+        "error_detail": message[:500],
+    }
+
+
+def apply_mail_fetch_result_fields(target: MailAccount | TempAddress, result: dict[str, Any]) -> None:
+    target.last_status = "ok" if result.get("ok") else "error"
+    target.last_check_at = coerce_text(result.get("checked_at") or iso_now())
+    target.last_message_count = int(result.get("message_count") or 0)
+    target.last_error = coerce_text(result.get("error") or "")
+    target.last_error_code = coerce_text(result.get("error_code") or "")
+    target.last_error_label = coerce_text(result.get("error_label") or "")
+    target.last_error_hint = coerce_text(result.get("error_hint") or "")
+
+
 def fetch_for_account(account: MailAccount, provider: str, limit: int, sender_filter: str) -> dict[str, Any]:
     started = time.perf_counter()
     errors: list[str] = []
     messages: list[dict[str, Any]] = []
+    checked_at = iso_now()
+    used_provider = ""
     providers = ["graph", "imap"] if provider == "auto" else [provider]
     for current in providers:
         try:
@@ -1462,23 +1565,40 @@ def fetch_for_account(account: MailAccount, provider: str, limit: int, sender_fi
                 raise RuntimeError(f"Unsupported provider: {current}")
             account.last_status = "ok"
             account.last_error = ""
+            used_provider = current
             break
         except Exception as exc:
             errors.append(f"{current}: {exc}")
             account.last_status = "error"
             account.last_error = str(exc)[:500]
-    account.last_check_at = iso_now()
-    return {
+    account.last_check_at = checked_at
+    detail = classify_mail_fetch_error("; ".join(errors), "microsoft") if account.last_status != "ok" else {}
+    result = {
+        "source": "microsoft",
+        "provider": used_provider or provider,
         "email": account.email,
         "ok": account.last_status == "ok",
+        "checked_at": checked_at,
         "elapsed_ms": round((time.perf_counter() - started) * 1000),
+        "message_count": len(messages),
         "messages": messages,
         "errors": errors,
     }
+    if detail:
+        result.update({
+            "error": detail["error_detail"],
+            "error_code": detail["error_code"],
+            "error_label": detail["error_label"],
+            "error_hint": detail["error_hint"],
+            "retryable": detail["retryable"],
+        })
+    apply_mail_fetch_result_fields(account, result)
+    return result
 
 
 def fetch_for_temp_address(address: TempAddress, limit: int, sender_filter: str) -> dict[str, Any]:
     started = time.perf_counter()
+    checked_at = iso_now()
     try:
         messages = fetch_temp_messages(address, limit=limit, sender_filter=sender_filter)
         address.last_status = "ok"
@@ -1487,14 +1607,29 @@ def fetch_for_temp_address(address: TempAddress, limit: int, sender_filter: str)
         messages = []
         address.last_status = "error"
         address.last_error = str(exc)[:500]
-    address.last_check_at = iso_now()
-    return {
+    address.last_check_at = checked_at
+    detail = classify_mail_fetch_error(address.last_error, "temp") if address.last_status != "ok" else {}
+    result = {
+        "source": "temp",
+        "provider": "temp",
         "email": address.email,
         "ok": address.last_status == "ok",
+        "checked_at": checked_at,
         "elapsed_ms": round((time.perf_counter() - started) * 1000),
+        "message_count": len(messages),
         "messages": messages,
         "errors": [] if address.last_status == "ok" else [address.last_error],
     }
+    if detail:
+        result.update({
+            "error": detail["error_detail"],
+            "error_code": detail["error_code"],
+            "error_label": detail["error_label"],
+            "error_hint": detail["error_hint"],
+            "retryable": detail["retryable"],
+        })
+    apply_mail_fetch_result_fields(address, result)
+    return result
 
 
 def run_mail_fetch_jobs(jobs: list[tuple[str, MailAccount | TempAddress, str, int, str]]) -> list[dict[str, Any]]:
@@ -1515,12 +1650,21 @@ def run_mail_fetch_jobs(jobs: list[tuple[str, MailAccount | TempAddress, str, in
                 results[index] = future.result()
             except Exception as exc:
                 kind, target, *_ = jobs[index]
+                detail = classify_mail_fetch_error(f"{kind}: {exc}", kind)
                 results[index] = {
+                    "source": kind,
                     "email": getattr(target, "email", ""),
                     "ok": False,
+                    "checked_at": iso_now(),
                     "elapsed_ms": 0,
+                    "message_count": 0,
                     "messages": [],
                     "errors": [f"{kind}: {exc}"],
+                    "error": detail["error_detail"],
+                    "error_code": detail["error_code"],
+                    "error_label": detail["error_label"],
+                    "error_hint": detail["error_hint"],
+                    "retryable": detail["retryable"],
                 }
     return [result for result in results if result is not None]
 
@@ -6490,10 +6634,17 @@ def fetch_transient_client_mail(payload: dict[str, Any]) -> dict[str, Any]:
 
     results = run_mail_fetch_jobs(jobs)
     messages = [message for result in results for message in result.get("messages", [])]
+    failed_results = [result for result in results if not result.get("ok")]
     return {
         "results": results,
         "messages": sorted(messages, key=message_sort_value, reverse=True),
         "errors": account_errors + temp_errors,
+        "summary": {
+            "total": len(results),
+            "ok": len(results) - len(failed_results),
+            "failed": len(failed_results),
+            "messages": len(messages),
+        },
         "types": MAIL_TYPE_LABELS,
     }
 
@@ -7142,10 +7293,20 @@ class Handler(BaseHTTPRequestHandler):
                 jobs.extend(("temp", address, provider, limit, sender_filter) for address in temp_targets)
             results = run_mail_fetch_jobs(jobs)
             messages = [message for result in results for message in result.get("messages", [])]
+            failed_results = [result for result in results if not result.get("ok")]
             upsert_messages(messages)
             save_accounts(accounts)
             save_temp_addresses(temp_addresses)
-            self.send_json({"results": results, "messages": messages})
+            self.send_json({
+                "results": results,
+                "messages": messages,
+                "summary": {
+                    "total": len(results),
+                    "ok": len(results) - len(failed_results),
+                    "failed": len(failed_results),
+                    "messages": len(messages),
+                },
+            })
             return
         if self.path == "/api/messages/delete":
             try:
