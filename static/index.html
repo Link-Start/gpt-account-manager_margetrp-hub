@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GPT账号管理助手</title>
-  <link rel="stylesheet" href="/styles.css?v=20260531-mail-diagnostics">
+  <link rel="stylesheet" href="/styles.css?v=20260601-phone-otp-channel">
   <link rel="stylesheet" href="/forge-theme.css?v=20260531-open-source-links">
   <script src="/nav-links.js?v=20260531-docker-dns-links" defer></script>
 </head>
@@ -132,11 +132,11 @@
           <div class="section-head">
             <div>
               <h2>异常扫描台</h2>
-              <p>先扫描 CPA 401，或把左侧选中的邮箱加入异常列表，再选中执行刷新。</p>
+              <p>先扫描 CPA 401，或把左侧选中的邮箱加入异常列表，再统一送入刷新队列。</p>
             </div>
             <div class="login-actions">
-              <button id="loginSelectedBtn" class="primary" type="button">执行选中异常</button>
-              <button id="loginRetryBtn" type="button">重试失败</button>
+              <button id="loginSelectedBtn" class="primary" type="button">加入选中队列</button>
+              <button id="loginRetryBtn" type="button">失败加入队列</button>
               <button id="exportCpaBtn" type="button">导出 CPA JSON</button>
               <button id="exportSub2Btn" type="button">导出 sub2api JSON</button>
             </div>
@@ -272,6 +272,6 @@
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="/client.js?v=20260531-mail-diagnostics" defer></script>
+  <script src="/client.js?v=20260601-phone-otp-channel" defer></script>
 </body>
 </html>

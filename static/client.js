@@ -1665,6 +1665,65 @@ function rowAuthFile(row) {
   return accountAuthFile(account);
 }
 
+function refreshQueueKey(row) {
+  return [
+    row.source_kind || row.source || "local",
+    String(row.email || row.name || "").toLowerCase(),
+    String(row.cpa_name || row.auth_index || ""),
+  ].join("|");
+}
+
+function rowToRefreshQueueItem(row) {
+  const account = accountForRow(row);
+  const email = row.email || account?.email || "";
+  return compactObject({
+    id: row.source_kind === "cpa"
+      ? `cpa-refresh:${String(row.cpa_name || row.auth_index || email || row.id || crypto.randomUUID()).toLowerCase()}`
+      : `refresh:${account?.id || row.account_id || email || row.id || crypto.randomUUID()}`,
+    source_kind: row.source_kind || "local",
+    source: row.source_kind === "cpa" ? "cpa" : (account?.source || "local"),
+    service: row.source_kind === "cpa" ? "CPA" : (account?.source === "microsoft" ? (account.service || "Outlook") : "临时邮箱"),
+    email,
+    name: row.name || email,
+    cpa_name: row.cpa_name || "",
+    auth_index: row.auth_index || "",
+    account_id: account?.id || row.account_id || "",
+    cpa_base_url: row.source_kind === "cpa" ? els.cpaBaseUrl.value.trim() : "",
+    cpa_management_key: row.source_kind === "cpa" ? els.cpaKey.value : "",
+    status: "idle",
+    error: "",
+    logs: [],
+    auth_file: row.auth_file || account?.auth_file || null,
+  });
+}
+
+function enqueueAbnormalRows(rows) {
+  if (!rows.length) {
+    toast("没有可加入队列的账号");
+    return 0;
+  }
+  const queue = loadJson(STORAGE_KEYS.refreshQueue, []);
+  const byKey = new Map((Array.isArray(queue) ? queue : []).map((row) => [refreshQueueKey(row), row]));
+  let added = 0;
+  rows.forEach((row) => {
+    if (!isRowRefreshable(row)) return;
+    const item = rowToRefreshQueueItem(row);
+    const key = refreshQueueKey(item);
+    const previous = byKey.get(key);
+    byKey.set(key, { ...(previous || {}), ...item, status: previous?.status || "idle" });
+    if (!previous) added += 1;
+    row.status = "queued";
+    row.error = "";
+    state.loginJobs.set(row.id, { status: "queued", error: "", logs: [] });
+  });
+  saveJson(STORAGE_KEYS.refreshQueue, [...byKey.values()]);
+  saveAbnormalRows();
+  renderLoginTable();
+  addClientLog(`已加入刷新队列：${rows.length} 个账号，新增 ${added} 个；请到凭证刷新页统一执行。`, "success");
+  toast(added ? `已加入队列：新增 ${added} 个` : "账号已在刷新队列");
+  return added;
+}
+
 function rowSub2apiItem(row, authFile) {
   return accountSub2apiItem({
     email: row.email,
@@ -1970,7 +2029,7 @@ function renderLoginTable() {
         <td>${escapeHtml(source)}</td>
         <td><span class="login-status ${escapeHtml(status)}">${escapeHtml(statusText)}</span></td>
         <td><div class="login-error" title="${escapeHtml(detail)}">${escapeHtml(detail)}</div></td>
-        <td><button class="login-one" type="button" ${status === "running" || status === "queued" || !refreshable ? "disabled" : ""}>${refreshable ? "执行" : "跳过"}</button></td>
+        <td><button class="login-one" type="button" ${status === "queued" || !refreshable ? "disabled" : ""}>${refreshable ? "加入队列" : "跳过"}</button></td>
       </tr>
     `;
   }).join("");
@@ -1982,56 +2041,9 @@ function selectedAbnormalRows({ failedOnly = false } = {}) {
   return failedOnly ? base.filter((row) => rowStateFor(row).status === "failed") : base;
 }
 
-async function startAbnormalLogin(row) {
-  if (!isRowRefreshable(row)) {
-    const reason = row.action_hint || row.message || row.diagnosis || "当前状态不建议刷新";
-    addClientLog(`${row.email || row.name} 跳过：${reason}`, "warning");
-    toast(reason);
-    return;
-  }
-  const account = accountForRow(row);
-  const payload = loginPayload(row);
-  state.loginJobs.set(row.id, { status: "queued", error: "", logs: [] });
-  row.status = "queued";
-  row.error = "";
-  saveAbnormalRows();
-  addClientLog(`${row.email || row.name} 启动授权刷新`, "info");
-  renderLoginTable();
-  try {
-    const response = await fetch("/client-api/cpa/login-start", {
-      method: "POST",
-      headers: apiHeaders(),
-      body: JSON.stringify(payload),
-    });
-    const data = await readJsonResponse(response, "/client-api/cpa/login-start");
-    if (!response.ok || !data.success) throw new Error(data.error || "刷新失败");
-    const job = data.job || {};
-    state.loginJobs.set(row.id, {
-      status: job.status || "queued",
-      jobId: job.job_id || "",
-      error: job.error || "",
-      logs: job.logs || [],
-    });
-    row.status = job.status || "queued";
-    row.jobId = job.job_id || "";
-    row.error = job.error || "";
-    row.account_id = account?.id || row.account_id || "";
-    saveAbnormalRows();
-    addClientLog(`${row.email || row.name} 已提交授权任务`, "info");
-    startLoginPolling();
-  } catch (error) {
-    state.loginJobs.set(row.id, { status: "failed", error: error.message || "刷新失败", logs: [] });
-    row.status = "failed";
-    row.error = error.message || "刷新失败";
-    saveAbnormalRows();
-    addClientLog(`${row.email || row.name} 刷新失败：${error.message || "刷新失败"}`, "error");
-  }
-  renderLoginTable();
-}
-
-async function startLoginForRows(rows) {
+function startLoginForRows(rows) {
   if (!rows.length) {
-    toast("没有可执行的异常账号");
+    toast("没有可加入队列的异常账号");
     return;
   }
   setActiveView("login");
@@ -2043,9 +2055,7 @@ async function startLoginForRows(rows) {
     renderLoginTable();
     return;
   }
-  for (const row of runnable) {
-    await startAbnormalLogin(row);
-  }
+  enqueueAbnormalRows(runnable);
 }
 
 function startLoginPolling() {

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GPT账号管理助手 - 凭证刷新</title>
-  <link rel="stylesheet" href="/styles.css?v=20260531-manual-email-code-live">
+  <link rel="stylesheet" href="/styles.css?v=20260601-phone-otp-channel">
   <link rel="stylesheet" href="/forge-theme.css?v=20260531-open-source-links">
   <script src="/nav-links.js?v=20260531-docker-dns-links" defer></script>
 </head>
@@ -191,7 +191,7 @@
               <div class="refresh-config-body phone-pool-panel">
                 <div class="phone-pool-head">
                   <strong>手机号 + 接码 API</strong>
-                  <span>API 可用 {phone}、{email} 占位。</span>
+                  <span>API 可用 {phone}、{email} 占位；批量导入可选绑定邮箱。</span>
                 </div>
                 <div class="phone-mode-tabs" role="tablist" aria-label="手机池模式">
                   <label><input id="phoneModeBatch" name="phonePoolMode" type="radio" value="batch"><span>批量池</span></label>
@@ -202,9 +202,9 @@
                   <input id="phoneApiUrl" placeholder="接码 API URL，例如 https://api.example.com/sms?phone={phone}">
                   <button id="addPhoneEntry" type="button">加入/更新</button>
                 </div>
-                <div class="phone-batch-panel" id="phoneBatchPanel" hidden>
-                  <textarea id="phoneBatchText" rows="3" spellcheck="false" placeholder="批量导入：手机号----接码 API----绑定邮箱(可选)，每行一个"></textarea>
-                  <button id="importPhoneBatch" type="button">导入批量池</button>
+                <div class="phone-batch-panel" id="phoneBatchPanel">
+                  <textarea id="phoneBatchText" rows="3" spellcheck="false" placeholder="批量导入：手机号----接码 API----绑定邮箱(可选)，不填邮箱进入批量池"></textarea>
+                  <button id="importPhoneBatch" type="button">批量导入</button>
                 </div>
                 <div class="phone-code-panel">
                   <div>
@@ -266,6 +266,6 @@
     </main>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="/refresh.js?v=20260531-manual-email-code-live" defer></script>
+  <script src="/refresh.js?v=20260601-phone-otp-channel" defer></script>
 </body>
 </html>

@@ -72,7 +72,7 @@ LOGIN_HISTORY_FILE = DATA_DIR / "login_history.json"
 LOGIN_DEBUG_DIR = DATA_DIR / "login_debug"
 UPGRADE_REQUEST_FILE = DATA_DIR / "upgrade_request.json"
 UPGRADE_RESULT_FILE = DATA_DIR / "upgrade_result.json"
-APP_VERSION = "20260531-manual-email-code-live"
+APP_VERSION = "20260601-phone-otp-channel"
 
 DEFAULT_HOST = os.environ.get("MAIL_PICKUP_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("MAIL_PICKUP_PORT", "8765"))
@@ -527,16 +527,31 @@ def upsert_messages(incoming: list[dict[str, Any]], path: Path = MESSAGES_FILE) 
     save_messages(list(cache.values()), path)
 
 
+def parse_message_datetime(value: Any) -> datetime | None:
+    text = coerce_text(value)
+    if not text:
+        return None
+    try:
+        parsed = parsedate_to_datetime(text)
+        if parsed:
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+    except Exception:
+        pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
 def message_sort_value(message: dict[str, Any]) -> str:
     value = message.get("received_at") or message.get("cached_at") or ""
-    try:
-        return parsedate_to_datetime(str(value)).astimezone(timezone.utc).isoformat()
-    except Exception:
-        text = str(value).replace("Z", "+00:00")
-        try:
-            return datetime.fromisoformat(text).astimezone(timezone.utc).isoformat()
-        except Exception:
-            return str(value)
+    parsed = parse_message_datetime(value)
+    return parsed.isoformat() if parsed else str(value)
 
 
 REFRESH_RESULTS_LIMIT = 500
@@ -859,15 +874,159 @@ def poll_phone_code(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def normalize_phone_digits(value: Any) -> str:
+    return re.sub(r"\D+", "", coerce_text(value))
+
+
+def extract_phone_hint_from_text(value: Any) -> str:
+    text = coerce_text(value)
+    if not text:
+        return ""
+    patterns = [
+        r"(?:ending\s+in|ends\s+in|last\s+\d*\s*digits?|尾号|末尾|手机|手机号|电话|phone|mobile|sms)[^\d+*xX•]{0,40}(\+?\d[\d\s().-]{1,22}\d|[*xX•]{2,}\s*\d{2,6}|\d{2,6})",
+        r"(\+\d[\d\s().-]{6,22}\d)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            digits = normalize_phone_digits(match.group(1))
+            if len(digits) >= 2:
+                return digits
+    return ""
+
+
+def extract_phone_hint_from_step(data: Any, continue_url: str = "") -> str:
+    texts: list[str] = []
+    seen = 0
+
+    def visit(value: Any, key_hint: str = "") -> None:
+        nonlocal seen
+        if seen > 120:
+            return
+        seen += 1
+        if isinstance(value, dict):
+            for key, item in value.items():
+                key_text = coerce_text(key)
+                if re.search(r"phone|mobile|sms|mfa|factor|verification|otp|channel|手机|号码", key_text, re.I):
+                    texts.append(f"{key_text}: {coerce_text(item)}")
+                visit(item, key_text)
+        elif isinstance(value, list):
+            for item in value[:80]:
+                visit(item, key_hint)
+        elif isinstance(value, str):
+            if key_hint or re.search(r"phone|mobile|sms|mfa|otp|channel|手机|号码|\+\d|尾号|ending\s+in", value, re.I):
+                texts.append(value)
+
+    visit(data)
+    if continue_url:
+        texts.append(continue_url)
+    for text in texts:
+        hint = extract_phone_hint_from_text(text)
+        if hint:
+            return hint
+    return ""
+
+
+def phone_pool_entries_from_payload(payload: dict[str, Any]) -> list[dict[str, str]]:
+    raw_entries = payload.get("phone_pool") or payload.get("phonePool") or []
+    if not isinstance(raw_entries, list):
+        return []
+    entries: list[dict[str, str]] = []
+    for item in raw_entries:
+        if not isinstance(item, dict):
+            continue
+        phone = coerce_text(item.get("phone") or item.get("phone_number") or item.get("phoneNumber"))
+        api_url = coerce_text(item.get("api_url") or item.get("apiUrl") or item.get("phone_api_url") or item.get("phoneApiUrl"))
+        if not phone or not api_url:
+            continue
+        entries.append({
+            "id": coerce_text(item.get("id")),
+            "mode": coerce_text(item.get("mode")),
+            "phone": phone,
+            "phone_digits": normalize_phone_digits(phone),
+            "api_url": api_url,
+            "account_email": coerce_text(item.get("account_email") or item.get("accountEmail")).lower(),
+        })
+    return entries
+
+
+def phone_pool_match_by_hint(entries: list[dict[str, str]], hint: str) -> dict[str, str] | None:
+    hint_digits = normalize_phone_digits(hint)
+    if len(hint_digits) < 2:
+        return None
+    exact = [entry for entry in entries if entry["phone_digits"] == hint_digits]
+    if len(exact) == 1:
+        return exact[0]
+    if len(hint_digits) >= 4:
+        suffix = [entry for entry in entries if entry["phone_digits"].endswith(hint_digits)]
+        if len(suffix) == 1:
+            return suffix[0]
+    if len(hint_digits) >= 2:
+        suffix = [entry for entry in entries if entry["phone_digits"].endswith(hint_digits)]
+        if len(suffix) == 1:
+            return suffix[0]
+    return None
+
+
+def manual_phone_code_for_payload(payload: dict[str, Any]) -> str:
+    code = clean_manual_email_code(first_text(
+        payload.get("manual_phone_code"),
+        payload.get("phone_code"),
+        payload.get("sms_code"),
+    ))
+    if code:
+        return code
+    job_id = coerce_text(payload.get("job_id"))
+    if not job_id:
+        return ""
+    with LOGIN_JOBS_LOCK:
+        job = LOGIN_JOBS.get(job_id)
+        if not job:
+            return ""
+        return clean_manual_email_code(job.get("manual_phone_code"))
+
+
+def set_login_manual_phone_code(payload: dict[str, Any], workspace_id: str = "public") -> dict[str, Any]:
+    job_id = coerce_text(payload.get("job_id") or payload.get("jobId"))
+    code = clean_manual_email_code(first_text(
+        payload.get("manual_phone_code"),
+        payload.get("phone_code"),
+        payload.get("sms_code"),
+    ))
+    if not job_id:
+        raise RuntimeError("登录任务不存在")
+    if not code:
+        raise RuntimeError("请输入 4-8 位手机验证码")
+    expected_workspace = normalize_workspace_id(workspace_id)
+    with LOGIN_JOBS_LOCK:
+        job = LOGIN_JOBS.get(job_id)
+        if not job:
+            raise RuntimeError("登录任务不存在")
+        job_workspace = normalize_workspace_id(job.get("workspace_id"))
+        if expected_workspace and job_workspace != expected_workspace:
+            raise RuntimeError("登录任务不属于当前工作区")
+        job["manual_phone_code"] = code
+        job["updated_at"] = iso_now()
+    append_login_log(job_id, "已收到手动手机验证码", "info", "manual_phone_code")
+    return {"success": True, "job_id": job_id}
+
+
 def network_error_message(url: str, exc: BaseException) -> str:
     parsed = urllib.parse.urlparse(url)
     host = parsed.hostname or url
     reason = getattr(exc, "reason", exc)
     text = str(reason or exc)
+    lowered = text.lower()
     if "Temporary failure in name resolution" in text or "Name or service not known" in text:
         return f"服务器 DNS 解析失败：{host}。服务端请求由 VPS 发起，不是用户浏览器直接访问；请检查 VPS DNS、代理或目标 API 域名。原始错误：{text}"
     if "nodename nor servname provided" in text or "getaddrinfo failed" in text:
         return f"服务器 DNS 解析失败：{host}。服务端请求由 VPS 发起，不是用户浏览器直接访问；请检查 VPS DNS、代理或目标 API 域名。原始错误：{text}"
+    if "unexpected_eof_while_reading" in lowered or "eof occurred in violation of protocol" in lowered:
+        return f"代理 TLS 连接被中断：{host}。当前代理出口没有稳定完成 HTTPS 握手，请更换代理或稍后重试。原始错误：{text}"
+    if "connection reset" in lowered or "connection refused" in lowered or "remote end closed connection" in lowered:
+        return f"代理连接失败：{host}。当前代理出口连接被关闭或拒绝，请更换代理。原始错误：{text}"
+    if "timed out" in lowered or "timeout" in lowered:
+        return f"代理连接超时：{host}。当前代理出口响应太慢，请更换代理或降低批量。原始错误：{text}"
     return f"服务器网络请求失败：{host}。原始错误：{text}"
 
 
@@ -1512,6 +1671,8 @@ def extract_codes(text: str) -> list[str]:
             code = match.group(1)
             if code.lower() in {"ffffff", "000000"}:
                 continue
+            if not code.isdigit() and not (re.search(r"[A-Za-z]", code) and re.search(r"\d", code)):
+                continue
             if code not in seen:
                 seen.add(code)
                 found.append(code)
@@ -2086,6 +2247,10 @@ def sticky_proxy_url(proxy_url: str, job_id: str = "") -> str:
     raw = coerce_text(proxy_url)
     if not raw:
         return ""
+    session_id = re.sub(r"[^a-zA-Z0-9]", "", job_id or uuid.uuid4().hex)[:12] or uuid.uuid4().hex[:12]
+    for marker in ("{session}", "{SESSION}", "{{session}}", "{{SESSION}}", "$SESSION"):
+        if marker in raw:
+            raw = raw.replace(marker, session_id)
     parsed = urllib.parse.urlparse(raw)
     username = urllib.parse.unquote(parsed.username or "")
     if (
@@ -2095,7 +2260,6 @@ def sticky_proxy_url(proxy_url: str, job_id: str = "") -> str:
         and "rrp.bestgo.work" in parsed.hostname.lower()
         and "-session-" not in username
     ):
-        session_id = re.sub(r"[^a-zA-Z0-9]", "", job_id or uuid.uuid4().hex)[:12] or uuid.uuid4().hex[:12]
         username = f"{username}-session-{session_id}" if username else f"session-{session_id}"
         netloc = urllib.parse.quote(username, safe="-._~")
         if parsed.password is not None:
@@ -2558,6 +2722,64 @@ def classify_login_exception(exc: Exception) -> dict[str, Any]:
             "status": status,
             "retryable": retryable,
         }
+    if (
+        "服务器 dns 解析失败" in lowered
+        or "temporary failure in name resolution" in lowered
+        or "name or service not known" in lowered
+        or "getaddrinfo failed" in lowered
+    ):
+        return {
+            "message": "DNS 解析失败：VPS 或代理无法解析目标域名。",
+            "code": "dns_failed",
+            "hint": "这是网络基础问题，不是账号或邮箱问题。请检查 VPS DNS、代理 DNS 转发，或更换可解析 auth.openai.com / chatgpt.com 的代理出口。",
+            "status": status,
+            "retryable": True,
+        }
+    if (
+        "unexpected_eof_while_reading" in lowered
+        or "eof occurred in violation of protocol" in lowered
+        or "代理 tls 连接被中断" in lowered
+    ):
+        return {
+            "message": "代理 TLS 中断：代理出口没有稳定完成 HTTPS 握手。",
+            "code": "proxy_tls_eof",
+            "hint": "这不是账号失败，也不是邮箱收不到码；是代理到目标站的 TLS 连接被截断。请换代理出口，或检查代理协议/账号是否稳定。",
+            "status": status,
+            "retryable": True,
+        }
+    if (
+        "代理连接超时" in lowered
+        or "timed out" in lowered
+        or "timeout" in lowered
+        or "winerror 10060" in lowered
+        or "没有正确答复" in message
+        or "连接尝试失败" in message
+    ):
+        return {
+            "message": "代理超时：代理出口响应太慢或不可用。",
+            "code": "proxy_timeout",
+            "hint": "请更换更稳定的代理，或降低批量数量后重试。",
+            "status": status,
+            "retryable": True,
+        }
+    if (
+        "代理连接失败" in lowered
+        or "connection reset" in lowered
+        or "connection refused" in lowered
+        or "remote end closed connection" in lowered
+        or "without response" in lowered
+        or "tunnel connection failed" in lowered
+        or "cannot connect to proxy" in lowered
+        or "proxy error" in lowered
+        or "socks" in lowered and ("failed" in lowered or "error" in lowered)
+    ):
+        return {
+            "message": "代理连接失败：当前代理出口不可用或被目标站断开。",
+            "code": "proxy_connection_failed",
+            "hint": "请确认代理 URL、用户名密码、协议类型正确，并更换稳定出口后重试。",
+            "status": status,
+            "retryable": True,
+        }
     if "invalid_auth_step" in lowered or "invalid authorization step" in lowered:
         code = "oauth_invalid_auth_step"
         message = "OpenAI OAuth 步骤状态不匹配：授权会话还没有进入可提交邮箱的步骤。"
@@ -2570,6 +2792,31 @@ def classify_login_exception(exc: Exception) -> dict[str, Any]:
             "status": status,
             "retryable": retryable,
         }
+    if "did not return callback code" in lowered or "no continue url returned" in lowered or "没有返回可继续的 oauth 地址" in lowered:
+        if any(marker in lowered for marker in [
+            "phone_otp",
+            "phone-otp",
+            "phone verification",
+            "phone-verification",
+            "select-channel",
+            "mfa",
+            "sms",
+            "手机",
+        ]):
+            return {
+                "message": "手机二次验证未完成，已按失败处理。",
+                "code": "phone_2fa_failed",
+                "hint": "邮箱验证码已经通过，但 OAuth 后续进入了手机短信二次验证；需要长效手机 API 或手动输入本轮短信验证码。",
+                "status": status,
+                "retryable": False,
+            }
+        return {
+            "message": "OAuth 授权回调未完成，已按失败处理。",
+            "code": "oauth_callback_missing",
+            "hint": "邮箱验证码已经提交，但授权链路没有拿到 callback code。通常是代理会话中途失效、账号进入额外验证，或授权页面没有继续跳转。",
+            "status": status,
+            "retryable": True,
+        }
     if "unauthorized" in lowered or status == 401:
         return {
             "message": "授权失败或凭证已失效，已按失败处理。",
@@ -2580,17 +2827,21 @@ def classify_login_exception(exc: Exception) -> dict[str, Any]:
         }
     if (
         "mfa_required" in lowered
+        or "phone_2fa" in lowered
+        or "two-factor" in lowered
+        or "second factor" in lowered
         or "phone verification" in lowered
         or "phone number" in lowered
         or "mobile" in lowered
         or "手机号" in message
         or "手机验证" in message
+        or "二次验证" in message
         or "接码" in message
     ):
         return {
-            "message": "需要手机验证，已按失败处理。",
-            "code": "phone_verification_required",
-            "hint": "这个账号当前登录链路要求手机验证码，不属于邮箱接码；先放到失败里，后续换出口或换号处理。",
+            "message": "手机二次验证失败，已按失败处理。",
+            "code": "phone_2fa_failed",
+            "hint": "账号进入了手机二次验证，但没有完成短信验证码校验。请绑定长效手机 API，或在任务运行时手动输入手机验证码后重试。",
             "status": status,
             "retryable": False,
         }
@@ -2890,6 +3141,14 @@ class ChatGPTProtocolLogin:
     def login(self) -> dict[str, Any]:
         email_addr = coerce_text(self.payload.get("email"))
         password = coerce_text(self.payload.get("password"))
+        force_email_code = str(first_text(
+            self.payload.get("force_email_code"),
+            self.payload.get("forceEmailCode"),
+            self.payload.get("email_code_login"),
+            self.payload.get("emailCodeLogin"),
+        )).lower() in {"1", "true", "yes", "on"}
+        if force_email_code:
+            password = ""
         if not email_addr:
             raise RuntimeError("protocol login needs email")
 
@@ -3377,6 +3636,7 @@ class ChatGPTProtocolLogin:
         continue_url = self.normalize_auth_url(self.extract_continue_url(current_step))
         page_type = self.extract_page_type(current_step)
         mode = self.extract_email_verification_mode(current_step)
+        self.log("identifier", f"登录步骤：page={page_type or '-'}，mode={mode or '-'}", "info")
 
         if (page_type == "login_password" or "/log-in/password" in continue_url) and password:
             self.log("password", "Protocol login: submit password")
@@ -3386,9 +3646,10 @@ class ChatGPTProtocolLogin:
             page_type = self.extract_page_type(current_step)
             mode = self.extract_email_verification_mode(current_step) or mode
         elif page_type == "login_password" or "/log-in/password" in continue_url:
-            self.log("send_code", "Protocol login: no password, use email code path", "info")
+            self.log("send_code", "Protocol login: use email code path", "info")
             self.sentinel_token = generate_openai_sentinel_token(self.device_id, "email_verification", self.proxy_url)
-            self.kickoff_modern_otp(mode)
+            if not self.kickoff_modern_otp(mode):
+                self.log("send_code", "OpenAI 发码接口没有返回确认，继续等待邮箱新验证码", "warning")
             continue_url = ""
             page_type = "email_otp_verification"
 
@@ -3413,9 +3674,289 @@ class ChatGPTProtocolLogin:
         self.log("verify_code", "Protocol login: submit email code")
         current_step = self.submit_modern_code(code)
         continue_url = self.normalize_auth_url(self.extract_continue_url(current_step))
+        if self.needs_phone_verification(current_step, continue_url):
+            continue_url = self.complete_phone_verification(current_step, continue_url)
         if not continue_url:
             raise RuntimeError(f"email code accepted but no continue URL returned: {protocol_compact_error(current_step)}")
         return continue_url
+
+    def complete_phone_verification(self, step: dict[str, Any], continue_url: str = "") -> str:
+        self.log("phone_code", "账号要求手机二次验证", "warning")
+        phone_hint = extract_phone_hint_from_step(step, continue_url)
+        if phone_hint:
+            self.payload["_detected_phone_hint"] = phone_hint
+            self.log("phone_pool", f"检测到账号使用手机号尾号 {phone_hint[-4:]}", "info")
+        if self.needs_add_phone(step, continue_url):
+            continue_url = self.submit_phone_number_for_verification(continue_url, phone_hint)
+        elif self.needs_phone_channel_selection(step, continue_url):
+            continue_url = self.select_phone_otp_channel(step, continue_url)
+        code = self.fetch_phone_verification_code(phone_hint)
+        if not code:
+            raise LoginFlowError(
+                "手机二次验证失败：没有收到手机验证码。",
+                code="phone_2fa_failed",
+                hint="账号已经通过邮箱验证码，但后续要求手机短信二次验证。请绑定长效手机 API，或在任务运行时手动输入手机验证码。",
+                retryable=False,
+            )
+        self.log("phone_code", "已取到手机验证码，正在提交", "info")
+        current_step = self.submit_phone_verification_code(code, continue_url)
+        next_url = self.normalize_auth_url(self.extract_continue_url(current_step))
+        if not next_url and self.needs_phone_verification(current_step, ""):
+            raise LoginFlowError(
+                "手机二次验证失败：验证码无效或仍停留在手机验证步骤。",
+                code="phone_2fa_failed",
+                hint="手机验证码提交后仍未进入授权回调，通常是验证码无效、过期或该号码无法完成验证。",
+                retryable=False,
+            )
+        if not next_url:
+            raise LoginFlowError(
+                f"手机二次验证失败：没有返回继续授权地址。{protocol_compact_error(current_step)}",
+                code="phone_2fa_failed",
+                hint="手机验证码已提交，但 OpenAI 没有返回可继续的 OAuth 地址；请保留日志用于确认返回结构。",
+                retryable=False,
+            )
+        return next_url
+
+    def resolve_phone_code_source(self, phone_hint: str = "", *, allow_batch: bool = False) -> dict[str, str]:
+        entries = phone_pool_entries_from_payload(self.payload)
+        account_email = coerce_text(self.payload.get("email")).lower()
+        hint = phone_hint or coerce_text(self.payload.get("_detected_phone_hint"))
+        by_hint = phone_pool_match_by_hint(entries, hint)
+        if by_hint:
+            return by_hint
+        bound = [entry for entry in entries if account_email and entry["account_email"] == account_email]
+        if len(bound) == 1:
+            return bound[0]
+        phone = coerce_text(self.payload.get("phone_number") or self.payload.get("phoneNumber"))
+        api_url = coerce_text(self.payload.get("phone_api_url") or self.payload.get("phoneApiUrl"))
+        if phone and api_url:
+            return {
+                "id": coerce_text(self.payload.get("phone_binding_id") or self.payload.get("phoneBindingId")),
+                "mode": "payload",
+                "phone": phone,
+                "phone_digits": normalize_phone_digits(phone),
+                "api_url": api_url,
+                "account_email": account_email,
+            }
+        if allow_batch:
+            batch = [entry for entry in entries if not entry["account_email"] or entry["mode"] == "batch"]
+            if batch:
+                return batch[0]
+        return {}
+
+    def submit_phone_number_for_verification(self, continue_url: str = "", phone_hint: str = "") -> str:
+        source = self.resolve_phone_code_source(phone_hint, allow_batch=True)
+        phone = coerce_text(source.get("phone"))
+        if not phone:
+            raise LoginFlowError(
+                "手机二次验证失败：账号要求绑定手机号，但当前账号没有绑定长效手机。",
+                code="phone_2fa_failed",
+                hint="这个提示窗需要先提交手机号，再收短信验证码。请在长效手机池给该账号绑定手机号和 API URL 后重试。",
+                retryable=False,
+            )
+        self.payload["phone_number"] = phone
+        self.payload["phone_api_url"] = coerce_text(source.get("api_url"))
+        self.log("phone_pool", "提交绑定手机号", "info")
+        referer = continue_url or "https://auth.openai.com/add-phone"
+        form_url = self.normalize_auth_url(referer)
+        attempts = [
+            (form_url if "/add-phone" in urllib.parse.urlparse(form_url).path else "https://auth.openai.com/add-phone", {"phoneNumber": phone}),
+            ("https://auth.openai.com/api/accounts/phone-number", {"phone_number": phone, "phoneNumber": phone}),
+            ("https://auth.openai.com/api/accounts/phone-verification/send", {"phone_number": phone, "phoneNumber": phone}),
+        ]
+        last_status = 0
+        last_data: dict[str, Any] = {}
+        for url, body in attempts:
+            if not url:
+                continue
+            is_form = "/api/" not in urllib.parse.urlparse(url).path
+            resp = self.request(
+                url,
+                method="POST",
+                form_data={"phoneNumber": phone} if is_form else None,
+                json_data=None if is_form else body,
+                headers=self.headers(url, {
+                    "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8" if is_form else "application/json",
+                    "Origin": "https://auth.openai.com",
+                    "Referer": referer,
+                }),
+                timeout=45,
+            )
+            last_status = resp.status
+            if resp.status in {301, 302, 303, 307, 308} and resp.location():
+                return urllib.parse.urljoin(url, resp.location())
+            data = resp.json()
+            last_data = data
+            next_url = self.normalize_auth_url(self.extract_continue_url(data))
+            if resp.status == 200 and next_url:
+                return next_url
+            if resp.status == 200 and self.needs_phone_verification(data, resp.url):
+                return resp.url or "https://auth.openai.com/phone-verification"
+        raise LoginFlowError(
+            f"手机二次验证失败：手机号提交失败 HTTP {last_status or '-'} - {protocol_compact_error(last_data)}",
+            code="phone_2fa_failed",
+            hint="账号要求先提交手机号，但目标站没有接受当前号码。请更换绑定手机或检查号码格式。",
+            status=last_status or None,
+            retryable=False,
+        )
+
+    def select_phone_otp_channel(self, step: dict[str, Any], continue_url: str = "") -> str:
+        referer = self.normalize_auth_url(continue_url) or "https://auth.openai.com/phone-otp/select-channel"
+        phone_hint = extract_phone_hint_from_step(step, continue_url)
+        source = self.resolve_phone_code_source(phone_hint, allow_batch=True)
+        phone = coerce_text(source.get("phone"))
+        self.log("phone_code", "进入手机验证码通道，尝试发送短信", "info")
+        try:
+            page_resp = self.request(
+                referer,
+                headers=self.headers(referer, {
+                    "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+                    "Referer": "https://auth.openai.com/email-verification",
+                }),
+                timeout=45,
+            )
+            if page_resp.status in {301, 302, 303, 307, 308} and page_resp.location():
+                return urllib.parse.urljoin(referer, page_resp.location())
+            page_data = page_resp.json()
+            page_hint = extract_phone_hint_from_step(page_data, page_resp.url or referer)
+            if page_hint and not phone_hint:
+                phone_hint = page_hint
+                self.payload["_detected_phone_hint"] = phone_hint
+        except Exception as exc:
+            self.log("phone_code", f"读取手机验证页失败，继续尝试发码：{str(exc)[:120]}", "warning")
+
+        attempts = [
+            ("https://auth.openai.com/api/accounts/phone-otp/select-channel", {"channel": "sms"}),
+            ("https://auth.openai.com/api/accounts/phone-otp/select-channel", {"type": "sms"}),
+            ("https://auth.openai.com/api/accounts/phone-otp/send", {"channel": "sms"}),
+            ("https://auth.openai.com/api/accounts/phone-otp/resend", {}),
+            ("https://auth.openai.com/api/accounts/add-phone/send", {"channel": "sms"}),
+            ("https://auth.openai.com/api/accounts/phone-verification/send", {"channel": "sms"}),
+        ]
+        last_status = 0
+        last_data: dict[str, Any] = {}
+        for url, body in attempts:
+            request_body = dict(body)
+            if phone and ("/add-phone/" in url or "/phone-verification/" in url):
+                request_body.update({"phone_number": phone, "phoneNumber": phone})
+            headers = self.headers(url, {
+                "Accept": "application/json",
+                "Origin": "https://auth.openai.com",
+                "Referer": referer,
+            })
+            if self.sentinel_token:
+                headers["openai-sentinel-token"] = self.sentinel_token
+            resp = self.request(url, method="POST", json_data=request_body, headers=headers, timeout=45)
+            last_status = resp.status
+            if resp.status in {301, 302, 303, 307, 308} and resp.location():
+                self.log("phone_code", "已请求手机验证码，等待接码", "info")
+                return urllib.parse.urljoin(url, resp.location())
+            data = resp.json()
+            last_data = data
+            next_url = self.normalize_auth_url(self.extract_continue_url(data))
+            if resp.status == 200:
+                self.log("phone_code", "已请求手机验证码，等待接码", "info")
+                return next_url or "https://auth.openai.com/phone-otp"
+            if resp.status in {400, 401, 403} and re.search(r"invalid|expired|incorrect|验证码", protocol_compact_error(data), re.I):
+                continue
+        if last_status:
+            self.log("phone_code", f"手机短信通道请求未确认：HTTP {last_status}", "warning")
+            if last_data:
+                self.log("phone_code", protocol_compact_error(last_data), "warning")
+        return referer or "https://auth.openai.com/phone-otp"
+
+    def fetch_phone_verification_code(self, phone_hint: str = "", attempts: int = 24, delay: float = 5) -> str:
+        source = self.resolve_phone_code_source(phone_hint, allow_batch=False)
+        phone = coerce_text(source.get("phone"))
+        api_url = coerce_text(source.get("api_url"))
+        if phone and api_url:
+            self.payload["phone_number"] = phone
+            self.payload["phone_api_url"] = api_url
+            self.log("phone_pool", f"按手机号匹配长效手机尾号 {normalize_phone_digits(phone)[-4:]}", "info")
+        since = str(int(time.time()))
+        for attempt in range(1, max(1, attempts) + 1):
+            manual_code = manual_phone_code_for_payload(self.payload)
+            if manual_code:
+                self.log("manual_phone_code", "使用手动填写的手机验证码", "info")
+                return manual_code
+            if phone and api_url:
+                try:
+                    result = poll_phone_code({
+                        "phone": phone,
+                        "api_url": api_url,
+                        "account_email": self.payload.get("email", ""),
+                        "since": since,
+                    })
+                    if result.get("code"):
+                        self.log("phone_code", "已从长效手机 API 收到验证码", "success")
+                        return coerce_text(result.get("code"))
+                    if attempt == 1 or attempt % 4 == 0:
+                        self.log("phone_code", "等待手机验证码", "warning")
+                except Exception as exc:
+                    if attempt == 1 or attempt % 4 == 0:
+                        self.log("phone_code", f"手机取码失败：{str(exc)[:180]}", "warning")
+            elif attempt == 1:
+                self.log("phone_code", "未绑定长效手机，等待手动输入手机验证码", "warning")
+            time.sleep(max(1, delay))
+        return ""
+
+    def submit_phone_verification_code(self, code: str, referer_url: str = "") -> dict[str, Any]:
+        referer = referer_url or "https://auth.openai.com/phone-verification"
+        form_url = self.normalize_auth_url(referer)
+        form_path = urllib.parse.urlparse(form_url).path
+        if form_url and ("/phone-verification" in form_path or "/phone-otp" in form_path):
+            resp = self.request(
+                form_url,
+                method="POST",
+                form_data={"code": code},
+                headers=self.headers(form_url, {
+                    "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+                    "Origin": "https://auth.openai.com",
+                    "Referer": referer,
+                }),
+                timeout=45,
+            )
+            if resp.status in {301, 302, 303, 307, 308} and resp.location():
+                return {"continue_url": urllib.parse.urljoin(form_url, resp.location())}
+            if resp.status == 200:
+                data = resp.json()
+                if self.extract_continue_url(data):
+                    return data
+                if not self.needs_phone_verification(data, resp.url or form_url):
+                    return {"continue_url": resp.url or form_url}
+        attempts = [
+            ("POST", "https://auth.openai.com/api/accounts/phone-verification/validate", {"code": code}),
+            ("POST", "https://auth.openai.com/api/accounts/phone-otp/validate", {"code": code}),
+            ("POST", "https://auth.openai.com/api/accounts/sms/validate", {"code": code}),
+        ]
+        last_status = 0
+        last_data: dict[str, Any] = {}
+        for method, url, body in attempts:
+            headers = self.headers(url, {
+                "Accept": "application/json",
+                "Origin": "https://auth.openai.com",
+                "Referer": referer,
+            })
+            if self.sentinel_token:
+                headers["openai-sentinel-token"] = self.sentinel_token
+            resp = self.request(url, method=method, json_data=body, headers=headers, timeout=45)
+            last_status = resp.status
+            if resp.status in {301, 302, 303, 307, 308} and resp.location():
+                return {"continue_url": urllib.parse.urljoin(url, resp.location())}
+            data = resp.json()
+            last_data = data
+            if resp.status == 200:
+                return data
+            compact = protocol_compact_error(data)
+            if resp.status in {400, 401, 403} and re.search(r"invalid|expired|incorrect|code|验证码", compact, re.I):
+                break
+        raise LoginFlowError(
+            f"手机二次验证失败：HTTP {last_status or '-'} - {protocol_compact_error(last_data)}",
+            code="phone_2fa_failed",
+            hint="账号要求手机二次验证，但短信验证码提交未通过。请确认收到的是本轮最新验证码。",
+            status=last_status or None,
+            retryable=False,
+        )
 
     def submit_modern_password(self, password: str) -> dict[str, Any]:
         url = "https://auth.openai.com/api/accounts/password/verify"
@@ -3434,11 +3975,17 @@ class ChatGPTProtocolLogin:
 
     def kickoff_modern_otp(self, mode: str = "") -> bool:
         mode_lc = coerce_text(mode).lower()
-        existing = "passwordless_login" in mode_lc or "passwordless_signup" in mode_lc or "existing" in mode_lc
+        payload_mode = coerce_text(self.payload.get("mode") or "login").lower()
+        existing = (
+            payload_mode != "signup"
+            or "passwordless_login" in mode_lc
+            or "existing" in mode_lc
+        )
         attempts = (
             [
                 ("POST", "https://auth.openai.com/api/accounts/email-otp/resend", "https://auth.openai.com/email-verification", None),
                 ("GET", "https://auth.openai.com/api/accounts/email-otp/send", "https://auth.openai.com/email-verification", None),
+                ("POST", "https://auth.openai.com/api/accounts/passwordless/send-otp", "https://auth.openai.com/email-verification", {}),
             ]
             if existing
             else [
@@ -3458,7 +4005,7 @@ class ChatGPTProtocolLogin:
             try:
                 resp = self.request(url, method=method, json_data=body, headers=headers, timeout=30)
                 if resp.status == 200:
-                    self.log("send_code", "OpenAI 已返回发送/重发验证码请求", "info")
+                    self.log("send_code", f"OpenAI 已返回发送/重发验证码请求：{urllib.parse.urlparse(url).path}", "info")
                     return True
             except Exception:
                 continue
@@ -3477,6 +4024,8 @@ class ChatGPTProtocolLogin:
         data = resp.json()
         if resp.status != 200:
             raise RuntimeError(f"email code verify failed: HTTP {resp.status} - {protocol_compact_error(data)}")
+        next_url = self.normalize_auth_url(self.extract_continue_url(data))
+        self.log("verify_code", f"验证码提交响应：page={self.extract_page_type(data) or '-'}，next={self.safe_url_for_log(next_url) if next_url else '-'}", "info")
         return data
 
     def capture_oauth_callback(self, start_url: str, max_hops: int = 18) -> tuple[str, str]:
@@ -3753,6 +4302,67 @@ class ChatGPTProtocolLogin:
     def extract_page_type(data: dict[str, Any]) -> str:
         page = data.get("page") if isinstance(data.get("page"), dict) else {}
         return coerce_text(page.get("type") or data.get("page_type"))
+
+    @staticmethod
+    def needs_phone_verification(data: dict[str, Any], continue_url: str = "") -> bool:
+        page = data.get("page") if isinstance(data.get("page"), dict) else {}
+        payload = page.get("payload") if isinstance(page.get("payload"), dict) else {}
+        markers = " ".join([
+            coerce_text(page.get("type")),
+            coerce_text(data.get("page_type")),
+            coerce_text(data.get("step")),
+            coerce_text(data.get("state")),
+            coerce_text(data.get("error")),
+            coerce_text(data.get("message")),
+            coerce_text(payload.get("type")),
+            coerce_text(payload.get("step")),
+            coerce_text(payload.get("state")),
+            coerce_text(continue_url),
+        ]).lower()
+        return any(marker in markers for marker in [
+            "phone_verification",
+            "phone-verification",
+            "phone_otp",
+            "phone-otp",
+            "phone otp",
+            "select-channel",
+            "select_channel",
+            "add-phone",
+            "mfa",
+            "sms",
+            "phone_number",
+            "phone number",
+            "mobile",
+        ])
+
+    @staticmethod
+    def needs_phone_channel_selection(data: dict[str, Any], continue_url: str = "") -> bool:
+        page = data.get("page") if isinstance(data.get("page"), dict) else {}
+        markers = " ".join([
+            coerce_text(page.get("type")),
+            coerce_text(data.get("page_type")),
+            coerce_text(data.get("step")),
+            coerce_text(data.get("state")),
+            coerce_text(continue_url),
+        ]).lower()
+        return any(marker in markers for marker in [
+            "phone_otp_select_channel",
+            "phone-otp/select-channel",
+            "select-channel",
+            "select_channel",
+        ])
+
+    @staticmethod
+    def needs_add_phone(data: dict[str, Any], continue_url: str = "") -> bool:
+        page = data.get("page") if isinstance(data.get("page"), dict) else {}
+        markers = " ".join([
+            coerce_text(page.get("type")),
+            coerce_text(data.get("page_type")),
+            coerce_text(data.get("step")),
+            coerce_text(data.get("state")),
+            coerce_text(continue_url),
+        ]).lower()
+        return "add-phone" in markers or "add_phone" in markers
 
     @staticmethod
     def extract_email_verification_mode(data: dict[str, Any]) -> str:
@@ -4441,7 +5051,13 @@ def build_cpa_repair_login_payload(base_payload: dict[str, Any], row: dict[str, 
     email_addr = coerce_text(row.get("email") or row.get("account"))
     accounts = [item for item in base_payload.get("accounts", []) if isinstance(item, dict) and coerce_text(item.get("email")).lower() == email_addr.lower()]
     temp_addresses = [item for item in base_payload.get("temp_addresses", []) if isinstance(item, dict) and coerce_text(item.get("email")).lower() == email_addr.lower()]
-    password = first_text(
+    force_email_code = str(first_text(
+        base_payload.get("force_email_code"),
+        base_payload.get("forceEmailCode"),
+        base_payload.get("email_code_login"),
+        base_payload.get("emailCodeLogin"),
+    )).lower() in {"1", "true", "yes", "on"}
+    password = "" if force_email_code else first_text(
         base_payload.get("password"),
         row.get("password"),
         *(item.get("password") for item in accounts),
@@ -4453,6 +5069,8 @@ def build_cpa_repair_login_payload(base_payload: dict[str, Any], row: dict[str, 
         "login_only": True,
         "email": email_addr,
         "password": password,
+        "force_email_code": force_email_code,
+        "email_code_login": force_email_code,
         "name": row.get("name") or email_addr,
         "row": row,
         "accounts": accounts,
@@ -5386,12 +6004,9 @@ def find_latest_code(messages: list[dict[str, Any]], *, after_ts: float = 0) -> 
     for message in sorted_messages:
         received_at = coerce_text(message.get("received_at"))
         if after_ts and received_at:
-            try:
-                parsed = parsedate_to_datetime(received_at)
-                if parsed and parsed.timestamp() + 60 < after_ts:
-                    continue
-            except Exception:
-                pass
+            parsed = parse_message_datetime(received_at)
+            if parsed and parsed.timestamp() + 10 < after_ts:
+                continue
         for code in message.get("codes") or []:
             clean = coerce_text(code)
             if re.fullmatch(r"\d{6}", clean):
@@ -6427,12 +7042,9 @@ def fetch_registration_verification_link(payload: dict[str, Any], *, since: floa
             for msg in sorted_messages:
                 received_at = coerce_text(msg.get("received_at"))
                 if since and received_at:
-                    try:
-                        parsed = parsedate_to_datetime(received_at)
-                        if parsed and parsed.timestamp() + 120 < since:
-                            continue
-                    except Exception:
-                        pass
+                    parsed = parse_message_datetime(received_at)
+                    if parsed and parsed.timestamp() + 30 < since:
+                        continue
                 
                 body_content = coerce_text(msg.get("html") or msg.get("body") or "")
                 match = pattern.search(body_content)
@@ -6593,13 +7205,38 @@ def run_cpa_login_job(job_id: str, payload: dict[str, Any]) -> None:
             proxy_url = require_login_proxy_url(payload)
             proxy_label = "已启用代理" if proxy_url else "未启用代理"
             append_login_log(job_id, f"使用 CPA OAuth 协议登录（{proxy_label}）", "info", "strategy")
+            proxy_session = coerce_text(payload.get("proxy_session") or payload.get("proxySession") or payload.get("job_id") or payload.get("jobId"))
+            if proxy_session:
+                append_login_log(job_id, f"本轮代理粘性会话：{proxy_session[-8:]}", "info", "egress")
             try:
                 trace = probe_egress_trace(proxy_url)
                 ip = trace.get("ip") or "-"
                 loc = trace.get("loc") or "-"
                 colo = trace.get("colo") or "-"
                 append_login_log(job_id, f"当前后端出口：ip={ip}，地区={loc}，节点={colo}（{proxy_label}）", "info", "egress")
+                try:
+                    time.sleep(0.8)
+                    confirm_trace = probe_egress_trace(proxy_url)
+                    confirm_ip = confirm_trace.get("ip") or ""
+                    if confirm_ip and ip != "-" and confirm_ip != ip:
+                        raise LoginFlowError(
+                            f"代理出口不稳定：同一账号会话检测到 {ip} -> {confirm_ip}",
+                            code="proxy_ip_unstable",
+                            hint="同一个账号的一轮 OAuth 需要稳定出口。已在发码前停止，请换一个新的代理 session 后重试。",
+                            retryable=True,
+                        )
+                except Exception as confirm_exc:
+                    if isinstance(confirm_exc, LoginFlowError):
+                        raise
+                    raise LoginFlowError(
+                        f"代理出口复检失败：{str(confirm_exc)[:140]}",
+                        code="proxy_ip_unstable",
+                        hint="同一个账号的一轮 OAuth 需要稳定出口。已在发码前停止，请换一个新的代理 session 后重试。",
+                        retryable=True,
+                    ) from confirm_exc
             except Exception as exc:
+                if isinstance(exc, LoginFlowError):
+                    raise
                 append_login_log(job_id, f"出口探测失败：{str(exc)[:180]}", "warning", "egress")
             session_payload = run_chatgpt_login_with_protocol(job_id, {**payload, "login_strategy": "protocol"})
         auth_file = session_to_cpa_auth(
@@ -6719,6 +7356,11 @@ def start_cpa_login_job(payload: dict[str, Any], workspace_id: str = "public") -
         raise RuntimeError("CPA 管理密钥不能为空")
     job_id = uuid.uuid4().hex
     payload = dict(payload)
+    if coerce_text(payload.get("mode") or "login").lower() != "signup":
+        payload.setdefault("force_email_code", True)
+        payload.setdefault("email_code_login", True)
+        if str(first_text(payload.get("force_email_code"), payload.get("email_code_login"))).lower() in {"1", "true", "yes", "on"}:
+            payload["password"] = ""
     payload["_workspace_id"] = normalize_workspace_id(workspace_id)
     payload["login_only"] = login_only
     payload["base_url"] = normalize_cpa_base_url(coerce_text(payload.get("base_url") or payload.get("baseUrl")) or "http://localhost:8317")
@@ -7528,6 +8170,16 @@ class Handler(BaseHTTPRequestHandler):
                     "success": False,
                     "error": str(exc)[:500],
                     "error_code": "manual_email_code_failed",
+                }, status=HTTPStatus.BAD_REQUEST)
+            return
+        if self.path == "/client-api/cpa/login-manual-phone-code":
+            try:
+                self.send_json(set_login_manual_phone_code(self.read_json(), self.workspace_id()))
+            except Exception as exc:
+                self.send_json({
+                    "success": False,
+                    "error": str(exc)[:500],
+                    "error_code": "manual_phone_code_failed",
                 }, status=HTTPStatus.BAD_REQUEST)
             return
         if self.path == "/client-api/cpa/login-start":

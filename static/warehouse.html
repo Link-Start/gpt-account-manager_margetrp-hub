@@ -1148,7 +1148,7 @@
                   </label>
                   <div class="repair-actions">
                     <button class="button button-secondary" id="copy-repair-email" type="button">复制邮箱</button>
-                    <button class="button button-primary" id="start-auto-login" type="button">兜底登录</button>
+                    <button class="button button-primary" id="start-auto-login" type="button">加入刷新队列</button>
                     <button class="button button-secondary" id="fetch-repair-mail" type="button">收验证码</button>
                     <button class="button button-secondary" id="open-chatgpt-login" type="button">打开登录</button>
                   </div>
@@ -1912,7 +1912,7 @@
           elements.loginProgressBar.style.width = "0%";
           elements.loginProgressText.textContent = "等待启动";
           setStatus(elements.repairMailStatus, "验证码会从当前浏览器本地保存的邮箱凭证里读取。");
-          setStatus(elements.repairStatus, "等待新的 Session JSON。");
+          setStatus(elements.repairStatus, "如需协议登录，先加入刷新队列，再到凭证刷新页统一执行。");
           elements.repairPanel.hidden = false;
           elements.repairPanel.scrollIntoView({ behavior: "smooth", block: "start" });
         }
@@ -2155,8 +2155,9 @@
           });
         }
 
-        function sendSelectedToRefreshQueue({ jump = true } = {}) {
-          const rows = selectedResultRows().filter((row) => firstNonEmpty(row.email, row.account, row.name, row.id));
+        function sendSelectedToRefreshQueue({ jump = true, rows: explicitRows } = {}) {
+          const sourceRows = Array.isArray(explicitRows) ? explicitRows : selectedResultRows();
+          const rows = sourceRows.filter((row) => firstNonEmpty(row.email, row.account, row.name, row.id));
           if (!rows.length) {
             setStatus(elements.status, "先扫描或导入要刷新的错误账号。", "error");
             return;
@@ -2242,41 +2243,22 @@
           setStatus(elements.status, `已导出 ${rows.length} 个 sub2api JSON 账号。`, "ok");
         }
 
-        async function startAutoLogin() {
+        function startAutoLogin() {
+          if (!state.repairRow) return;
           const payload = buildLoginPayload();
           if (!payload) return;
           if (!validatePayload(payload)) return;
-          if (!payload.password) {
-            setStatus(elements.repairStatus, "请输入 OpenAI 登录密码，或在账号管理页导入时把密码放第二段。", "error");
-            addJobLog("缺少 OpenAI 登录密码", "error");
-            return;
-          }
           if (!payload.temp_addresses.length && !payload.accounts.length) {
             setStatus(elements.repairMailStatus, "本地没有这个邮箱的取件凭证，无法自动拿验证码。", "error");
             addJobLog("缺少本地取件凭证", "error");
             return;
           }
           saveSettings();
-          setButtonBusy(elements.startAutoLogin, true, "授权中...");
-          setLoginProgress("queued", "任务已提交");
+          sendSelectedToRefreshQueue({ jump: false, rows: [state.repairRow] });
+          setLoginProgress("queued", "已加入刷新队列");
           elements.jobLogList.innerHTML = "";
-          addJobLog(`启动兜底授权：${payload.email}`, "info");
-          try {
-            const response = await fetch("/client-api/cpa/login-start", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(payload),
-            });
-            const data = await response.json();
-            if (!response.ok || !data.success) throw new Error(data.error || "启动兜底授权失败");
-            pollLoginJob(data.job.job_id);
-          } catch (error) {
-            setButtonBusy(elements.startAutoLogin, false);
-            setLoginProgress("failed", "启动失败");
-            const message = error instanceof Error ? error.message : "启动兜底授权失败";
-            setStatus(elements.repairStatus, message, "error");
-            addJobLog(message, "error");
-          }
+          addJobLog(`${payload.email} 已加入刷新队列`, "success");
+          setStatus(elements.repairStatus, "已加入刷新队列，请到凭证刷新页点击“执行选中”。", "ok");
         }
 
         async function pollLoginJob(jobId) {
@@ -2442,7 +2424,7 @@
           }
           requestWarehouse("delete", { items: selectedResultRows() });
         });
-        elements.repair401.addEventListener("click", () => requestWarehouse("repair-401"));
+        elements.repair401.addEventListener("click", () => sendSelectedToRefreshQueue());
         elements.importManual401.addEventListener("click", importManual401Rows);
         elements.manual401File.addEventListener("change", importManual401File);
         elements.sendImportedRefreshQueue.addEventListener("click", () => sendSelectedToRefreshQueue());
@@ -2451,7 +2433,7 @@
             setStatus(elements.status, "先扫描或导入 401 邮箱。", "error");
             return;
           }
-          requestWarehouse("repair-401", { items: selectedResultRows() });
+          sendSelectedToRefreshQueue({ rows: selectedResultRows() });
         });
         elements.deleteImported401.addEventListener("click", () => {
           if (!state.rows.length) {

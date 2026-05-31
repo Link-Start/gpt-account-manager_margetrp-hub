@@ -52,17 +52,29 @@ const state = {
   lastLog: null,
   logThrottle: new Map(),
   manualCodeTimers: new Map(),
+  runner: null,
 };
 
-const MAX_LOGIN_ATTEMPTS = 2;
+const MAX_LOGIN_ATTEMPTS = 3;
 const ACCOUNT_COOLDOWN_MS = 6500;
 const AUTO_RETRYABLE_CODES = new Set([
+  "dns_failed",
+  "proxy_connection_failed",
+  "proxy_tls_eof",
+  "proxy_timeout",
+  "proxy_ip_unstable",
   "network_incomplete_read",
   "login_network_blocked",
   "oauth_session_missing",
+  "oauth_callback_missing",
   "oauth_invalid_auth_step",
   "invalid_auth_step",
   "verification_code_missing",
+  "verification_code_invalid",
+  "risk_blocked",
+  "openai_auth_risk_blocked",
+  "openai_security_verification",
+  "csrf_or_risk_blocked",
 ]);
 const NON_RETRYABLE_CODES = new Set([
   "proxy_required",
@@ -73,11 +85,7 @@ const NON_RETRYABLE_CODES = new Set([
   "account_banned",
   "account_not_found",
   "unsupported_country_region_territory",
-  "csrf_or_risk_blocked",
-  "risk_blocked",
   "openai_turnstile_challenge",
-  "openai_security_verification",
-  "openai_auth_risk_blocked",
   "request_forbidden",
 ]);
 
@@ -292,6 +300,11 @@ const ERROR_MANUAL = {
   proxy_format_invalid: "代理格式错误",
   proxy_check_failed: "代理检测失败",
   proxy_ip_duplicate: "代理出口重复",
+  proxy_ip_unstable: "代理出口不稳定",
+  proxy_connection_failed: "代理连接失败",
+  proxy_tls_eof: "代理 TLS 中断",
+  proxy_timeout: "代理超时",
+  dns_failed: "DNS 失败",
   mail_credentials_missing: "缺取码邮箱",
   mail_pickup_unavailable: "取码邮箱不可用",
   admin_required: "需要管理员登录",
@@ -303,10 +316,13 @@ const ERROR_MANUAL = {
   verification_code_missing: "未收到验证码",
   verification_code_invalid: "验证码无效",
   phone_verification_required: "需要手机验证",
+  phone_2fa_failed: "二次验证失败",
+  manual_phone_code_failed: "手机验证码保存失败",
   account_banned: "账号被封禁",
   account_not_found: "账号不存在",
   login_page_not_ready: "登录页未就绪",
   oauth_session_missing: "授权会话失败",
+  oauth_callback_missing: "回调未完成",
   authorization_failed: "授权失败",
   unsupported_country_region_territory: "地区不支持",
   csrf_or_risk_blocked: "风控拦截",
@@ -332,6 +348,7 @@ const LOG_STEP_LABELS = {
   authorize: "建立授权会话",
   sentinel: "生成风控令牌",
   mail_credentials: "检查取码邮箱",
+  queue: "加入队列",
   egress: "检测代理出口",
   strategy: "建立登录会话",
   start: "任务启动",
@@ -343,6 +360,7 @@ const LOG_STEP_LABELS = {
   mail_code_missing: "未收到验证码",
   phone_pool: "绑定手机",
   phone_code: "手机取码",
+  manual_phone_code: "手动手机验证码",
   verify_code: "提交验证码",
   callback: "接收授权回调",
   cpa_callback: "提交授权回调",
@@ -404,6 +422,18 @@ function inferErrorCode(job = {}) {
   }
   if (/turnstile|security verification|cloudflare|csrf|access denied|risk|风控|安全验证/.test(text)) {
     return "risk_blocked";
+  }
+  if (/dns|name resolution|name or service not known|getaddrinfo|解析失败/.test(text)) {
+    return "dns_failed";
+  }
+  if (/unexpected_eof_while_reading|eof occurred in violation of protocol|代理 tls|ssl.*eof|tls.*eof/.test(text)) {
+    return "proxy_tls_eof";
+  }
+  if (/timed out|timeout|超时|winerror 10060|没有正确答复|连接尝试失败/.test(text)) {
+    return "proxy_timeout";
+  }
+  if (/proxy|代理|connection reset|connection refused|remote end closed|without response|tunnel connection failed|socks/.test(text)) {
+    return "proxy_connection_failed";
   }
   if (/incompleteread|incomplete read|connection closed|eof|network|ssl|连接中途断开|网络/.test(text)) {
     return "network_incomplete_read";
@@ -495,12 +525,14 @@ function isPhoneVerificationError(code, text = "") {
   const rawCode = String(code || "").toLowerCase();
   const rawText = String(text || "").toLowerCase();
   return rawCode === "phone_verification_required"
+    || rawCode === "phone_2fa_failed"
     || rawCode === "mfa_required"
     || rawText.includes("phone verification")
     || rawText.includes("phone number")
     || rawText.includes("mobile")
     || rawText.includes("手机号")
     || rawText.includes("手机验证")
+    || rawText.includes("二次验证")
     || rawText.includes("手机号码")
     || rawText.includes("接手机验证码");
 }
@@ -965,7 +997,7 @@ function renderQueue() {
         <td>
           <div class="queue-action-stack">
             <input class="queue-email-code" inputmode="numeric" autocomplete="one-time-code" value="${escapeHtml(row.manual_email_code || "")}" placeholder="邮箱验证码">
-            <button class="login-one" type="button" ${rawStatus === "running" || rawStatus === "queued" ? "disabled" : ""}>执行</button>
+            <button class="login-one" type="button" ${rawStatus === "running" || rawStatus === "queued" ? "disabled" : ""}>${rawStatus === "queued" ? "排队中" : rawStatus === "running" ? "登录中" : "加入队列"}</button>
           </div>
         </td>
       </tr>
@@ -986,8 +1018,34 @@ function renderQueue() {
 
 function selectedQueueRows({ failedOnly = false } = {}) {
   const chosen = state.queue.filter((row) => state.selectedQueue.has(row.id));
-  const base = chosen.length ? chosen : state.queue;
-  return failedOnly ? base.filter((row) => rowState(row).status === "failed") : base;
+  const base = chosen.length ? chosen : state.queue.filter((row) => rowState(row).status === "queued");
+  const rows = base.length ? base : state.queue;
+  return failedOnly ? rows.filter((row) => rowState(row).status === "failed") : rows;
+}
+
+function markRowsQueued(rows) {
+  let count = 0;
+  rows.forEach((row) => {
+    const current = rowState(row);
+    if (["queued", "running"].includes(current.status)) return;
+    row.status = "queued";
+    row.error = "";
+    row.error_code = "";
+    row.error_hint = "";
+    row.jobId = "";
+    row.retryable = undefined;
+    state.jobs.set(row.id, { status: "queued", error: "", logs: row.logs || [] });
+    count += 1;
+  });
+  if (count) {
+    saveQueue();
+    renderQueue();
+  }
+  return count;
+}
+
+function queuedRows() {
+  return state.queue.filter((row) => rowState(row).status === "queued");
 }
 
 function selectedSingleQueueRow() {
@@ -1003,6 +1061,28 @@ function phoneCodeForRow(row, entry = null) {
   return String(row?.manual_phone_code || row?.phone_code || entry?.last_code || "").trim();
 }
 
+function normalizePhoneDigits(value) {
+  return String(value || "").replace(/\D+/g, "");
+}
+
+function phoneMatches(candidate, wanted) {
+  const candidateDigits = normalizePhoneDigits(candidate);
+  const wantedDigits = normalizePhoneDigits(wanted);
+  if (!candidateDigits || !wantedDigits) return false;
+  if (candidateDigits === wantedDigits) return true;
+  return wantedDigits.length >= 4 && candidateDigits.endsWith(wantedDigits);
+}
+
+function phonePoolPayload() {
+  return state.phonePool.map((item) => ({
+    id: item.id,
+    mode: item.mode,
+    phone: item.phone,
+    api_url: item.api_url,
+    account_email: item.account_email || "",
+  }));
+}
+
 function phoneEntryForRow(row) {
   const key = accountEmailKey(row.email || row.name);
   if (row.phone_id) {
@@ -1010,7 +1090,7 @@ function phoneEntryForRow(row) {
     if (byId) return byId;
   }
   if (row.phone_number) {
-    const byPhone = state.phonePool.find((item) => item.phone === row.phone_number);
+    const byPhone = state.phonePool.find((item) => phoneMatches(item.phone, row.phone_number));
     if (byPhone) return byPhone;
   }
   if (key) {
@@ -1047,7 +1127,6 @@ function formatPhoneTime(value) {
 
 function renderPhonePool() {
   if (!els.phonePoolList) return;
-  if (els.phoneBatchPanel) els.phoneBatchPanel.hidden = currentPhoneMode() !== "batch";
   if (!state.phonePool.length) {
     els.phonePoolList.innerHTML = '<div class="phone-pool-empty">还没有长效手机。</div>';
     renderSelectedPhoneCodePanel();
@@ -1220,6 +1299,7 @@ function bindPhoneToSelected(phoneId) {
   item.account_email = accountEmail;
   row.phone_id = item.id;
   row.phone_number = item.phone;
+  row.phone_api_url = item.api_url;
   savePhonePool();
   saveQueue();
   renderAll();
@@ -1235,6 +1315,7 @@ function removePhoneEntry(phoneId) {
     if (row.phone_id === phoneId || String(row.phone_number || "") === item.phone) {
       delete row.phone_id;
       delete row.phone_number;
+      delete row.phone_api_url;
     }
   });
   savePhonePool();
@@ -1246,7 +1327,9 @@ async function pollPhoneEntry(phoneId, rowId = "") {
   const item = state.phonePool.find((entry) => entry.id === phoneId);
   if (!item) return;
   const targetRow = state.queue.find((row) => row.id === rowId) || state.queue.find((row) => {
-    return row.phone_id === item.id || accountEmailKey(row.email || row.name) === accountEmailKey(item.account_email);
+    return row.phone_id === item.id
+      || phoneMatches(item.phone, row.phone_number)
+      || accountEmailKey(row.email || row.name) === accountEmailKey(item.account_email);
   });
   item.status = "running";
   savePhonePool();
@@ -1322,6 +1405,13 @@ function saveManualPhoneCodeForSelected() {
   savePhonePool();
   renderAll();
   addLog(`${row.email} 已保存手机验证码：${code}`, "success", { step: "phone_code", email: row.email });
+  submitManualPhoneCode(row, code).catch((error) => {
+    addLog(`${row.email} 手动手机验证码保存失败`, "warning", {
+      email: row.email,
+      error_code: "manual_phone_code_failed",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 }
 
 async function pollSelectedPhoneCode() {
@@ -1498,7 +1588,7 @@ function loginPayload(row) {
   const sameEmail = state.accounts.filter((item) => String(item.email || "").toLowerCase() === String(email || "").toLowerCase());
   const isCpa = row.source_kind === "cpa";
   const mode = els.taskMode ? els.taskMode.value : "login";
-  const phoneEntry = ensurePhoneEntryForRow(row);
+  const phoneEntry = phoneEntryForRow(row);
   
   let base_url = isCpa ? row.cpa_base_url || "" : "";
   let management_key = isCpa ? row.cpa_management_key || "" : "";
@@ -1508,9 +1598,12 @@ function loginPayload(row) {
     if (!management_key) management_key = els.cpaManagementKey.value.trim();
   }
 
-  let password = account.password || row.password || "";
+  let password = "";
   if (mode === "signup" && !password) {
     // Generate a secure random password if empty during registration
+    password = account.password || row.password || "";
+  }
+  if (mode === "signup" && !password) {
     password = Math.random().toString(36).slice(-8) + "aA1!";
   }
 
@@ -1524,11 +1617,14 @@ function loginPayload(row) {
     proxy_url: isCpa ? row.proxy_url || els.proxyUrl.value.trim() : els.proxyUrl.value.trim(),
     login_strategy: "protocol",
     use_stored_mail_credentials: true,
+    force_email_code: mode !== "signup",
+    email_code_login: mode !== "signup",
     email,
     password,
     phone_number: phoneEntry?.phone || row.phone_number || "",
     phone_api_url: phoneEntry?.api_url || row.phone_api_url || "",
     phone_binding_id: phoneEntry?.id || row.phone_id || "",
+    phone_pool: phonePoolPayload(),
     manual_email_code: row.manual_email_code || "",
     email_code: row.manual_email_code || "",
     phone_code: phoneCodeForRow(row, phoneEntry),
@@ -1595,6 +1691,24 @@ async function submitManualEmailCode(row, code) {
   }
 }
 
+async function submitManualPhoneCode(row, code) {
+  const jobId = row.jobId || rowState(row).jobId || "";
+  if (!jobId) return;
+  const response = await fetch("/client-api/cpa/login-manual-phone-code", {
+    method: "POST",
+    headers: apiHeaders(),
+    body: JSON.stringify({
+      job_id: jobId,
+      manual_phone_code: code,
+    }),
+  });
+  const data = await readJsonResponse(response, "手动手机验证码保存失败");
+  if (!data.success) {
+    const details = parseErrorPayload(data, "手动手机验证码保存失败");
+    throw new Error(details.error || "手动手机验证码保存失败");
+  }
+}
+
 function addLog(message, type = "info", meta = {}) {
   if (els.logList.firstElementChild?.textContent === "等待操作。") {
     els.logList.innerHTML = "";
@@ -1649,34 +1763,35 @@ async function checkUniqueProxy(row, payload) {
   for (let attempt = 1; attempt <= 5; attempt += 1) {
     const proxySession = proxySessionFor(row, attempt);
     addLog(`${row.email} 检测代理出口`, "info", { step: "egress", email: row.email });
-    const response = await fetch("/client-api/proxy/check", {
-      method: "POST",
-      headers: apiHeaders(),
-      body: JSON.stringify({
-        use_proxy: true,
-        proxy_url: payload.proxy_url,
-        proxy_session: proxySession,
-      }),
-    });
-    const data = await readJsonResponse(response, "代理检测失败");
-    if (!data.success) {
-      const details = parseErrorPayload(data, "代理检测失败");
-      const error = new Error(details.error || "代理检测失败");
-      error.details = details;
-      throw error;
-    }
+    const data = await probeProxySession(payload.proxy_url, proxySession);
     const ip = String(data.ip || "").trim();
     if (!ip) {
       const error = new Error("代理出口没有返回 IP");
       error.details = { error: "代理出口没有返回 IP", error_code: "proxy_ip_unavailable", error_hint: "请检查代理是否可用" };
       throw error;
     }
+    await sleep(600);
+    let confirmData;
+    try {
+      confirmData = await probeProxySession(payload.proxy_url, proxySession);
+    } catch (error) {
+      addLog(`${row.email} 代理出口复检失败，重新换出口`, "warning", { error_code: "proxy_ip_unstable", email: row.email });
+      await sleep(700);
+      continue;
+    }
+    const confirmIp = String(confirmData.ip || "").trim();
+    if (!confirmIp || confirmIp !== ip) {
+      addLog(`${row.email} 代理出口不稳定，重新换出口`, "warning", { error_code: "proxy_ip_unstable", email: row.email });
+      await sleep(700);
+      continue;
+    }
     if (!state.runProxyIps.has(ip)) {
       state.runProxyIps.add(ip);
       const loc = String(data.loc || "").trim();
       const colo = String(data.colo || "").trim();
-      addLog(`${row.email} 代理出口 ip=${ip}${loc ? ` loc=${loc}` : ""}${colo ? ` colo=${colo}` : ""}`, "success", { step: "egress", email: row.email });
+      addLog(`${row.email} 代理出口 ip=${ip}${loc ? ` loc=${loc}` : ""}${colo ? ` colo=${colo}` : ""}，本轮会话 ${proxySession.slice(-8)}`, "success", { step: "egress", email: row.email });
       payload.proxy_session = proxySession;
+      row.proxy_session = proxySession;
       row.proxy_ip = ip;
       return { ip, proxySession };
     }
@@ -1690,6 +1805,26 @@ async function checkUniqueProxy(row, payload) {
     error_hint: "当前代理没有为每个账号换出不同 IP，请更换代理配置或降低批量数量",
   };
   throw error;
+}
+
+async function probeProxySession(proxyUrl, proxySession) {
+  const response = await fetch("/client-api/proxy/check", {
+    method: "POST",
+    headers: apiHeaders(),
+    body: JSON.stringify({
+      use_proxy: true,
+      proxy_url: proxyUrl,
+      proxy_session: proxySession,
+    }),
+  });
+  const data = await readJsonResponse(response, "代理检测失败");
+  if (!data.success) {
+    const details = parseErrorPayload(data, "代理检测失败");
+    const error = new Error(details.error || "代理检测失败");
+    error.details = details;
+    throw error;
+  }
+  return data;
 }
 
 async function preflightMailPickup(row, payload) {
@@ -1915,6 +2050,24 @@ async function startRows(rows) {
     toast("没有可执行账号");
     return;
   }
+  const queued = markRowsQueued(rows);
+  if (!queued && state.runner) {
+    toast("账号已经在队列中");
+    return;
+  }
+  if (state.runner) {
+    addLog(`已加入队列：${queued} 个账号，等待当前任务结束`, "info");
+    return;
+  }
+  state.runner = runQueuedRows();
+  try {
+    await state.runner;
+  } finally {
+    state.runner = null;
+  }
+}
+
+async function runQueuedRows() {
   saveSettings();
   await syncAccountsFromServer({ quiet: true });
   els.startSelected.disabled = true;
@@ -1923,12 +2076,13 @@ async function startRows(rows) {
   els.startSelected.textContent = "执行中";
   state.runProxyIps = new Set();
   if (els.loginConcurrency) els.loginConcurrency.value = "1";
-  addLog(`开始执行：${rows.length} 个账号，单账号顺序处理`, "info");
+  addLog(`开始执行队列：${queuedRows().length} 个账号，单账号顺序处理`, "info");
   try {
-    for (let index = 0; index < rows.length; index += 1) {
-      const row = rows[index];
+    while (true) {
+      const row = queuedRows()[0];
+      if (!row) break;
       await startLogin(row);
-      if (index < rows.length - 1) {
+      if (queuedRows().length) {
         await sleep(1500);
       }
     }
@@ -2394,7 +2548,12 @@ els.queueBody.addEventListener("click", (event) => {
   if (!button) return;
   const rowEl = button.closest("tr");
   const item = state.queue.find((row) => row.id === rowEl?.dataset.id);
-  if (item) startRows([item]);
+  if (!item) return;
+  const queued = markRowsQueued([item]);
+  if (queued) {
+    addLog(`${item.email} 已加入等待队列`, "info", { step: "queue", email: item.email });
+    toast(state.runner ? "已加入队列，将按顺序执行" : "已加入队列，请点击执行选中启动");
+  }
 });
 els.startSelected.addEventListener("click", () => startRows(selectedQueueRows()));
 els.retryFailed.addEventListener("click", () => startRows(selectedQueueRows({ failedOnly: true })));
