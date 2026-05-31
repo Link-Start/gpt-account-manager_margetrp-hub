@@ -97,6 +97,7 @@ const els = {
   sourceType: document.querySelector("#sourceType"),
   sourceCategory: document.querySelector("#sourceCategory"),
   sourceSelectAll: document.querySelector("#sourceSelectAll"),
+  verifySelectedSources: document.querySelector("#verifySelectedSources"),
   addSelected: document.querySelector("#addSelected"),
   sourcePageSize: document.querySelector("#sourcePageSize"),
   sourcePrev: document.querySelector("#sourcePrev"),
@@ -303,6 +304,16 @@ const ERROR_MANUAL = {
   dns_failed: "DNS 失败",
   mail_credentials_missing: "缺取码邮箱",
   mail_pickup_unavailable: "取码邮箱不可用",
+  mail_verification_required: "请先验证邮箱",
+  mail_verify_no_code: "未发现验证码",
+  graph_token_failed: "Graph 授权失败",
+  imap_token_failed: "IMAP 授权失败",
+  graph_fetch_failed: "Graph 收信失败",
+  imap_fetch_failed: "IMAP 收信失败",
+  temp_invalid_credential: "临时邮箱 JWT 无效",
+  temp_forbidden: "临时邮箱拒绝访问",
+  network_tls_eof: "网络 TLS 中断",
+  network_failed: "网络失败",
   admin_required: "需要管理员登录",
   delete_failed: "删除失败",
   temp_sync_config_missing: "临时邮箱同步配置缺失",
@@ -346,6 +357,7 @@ const LOG_STEP_LABELS = {
   authorize: "建立授权会话",
   sentinel: "生成风控令牌",
   mail_credentials: "检查取码邮箱",
+  mail_verify: "验证邮箱",
   queue: "加入队列",
   egress: "检测代理出口",
   strategy: "建立登录会话",
@@ -424,6 +436,21 @@ function inferErrorCode(job = {}) {
   }
   if (/dns|name resolution|name or service not known|getaddrinfo|解析失败/.test(text)) {
     return "dns_failed";
+  }
+  if (/graph token failed|graph 授权/.test(text)) {
+    return "graph_token_failed";
+  }
+  if (/imap token failed|imap 授权/.test(text)) {
+    return "imap_token_failed";
+  }
+  if (/graph fetch failed|graph 收信/.test(text)) {
+    return "graph_fetch_failed";
+  }
+  if (/imap fetch failed|imap 收信/.test(text)) {
+    return "imap_fetch_failed";
+  }
+  if (/invalid address credential|jwt.*无效|临时邮箱 jwt 无效/.test(text)) {
+    return "temp_invalid_credential";
   }
   if (/unexpected_eof_while_reading|eof occurred in violation of protocol|代理 tls|ssl.*eof|tls.*eof/.test(text)) {
     return "proxy_tls_eof";
@@ -775,6 +802,31 @@ function sourceRefreshState(account) {
   if (saved?.auth_file || rows.some((row) => row.auth_file || rowState(row).status === "success")) {
     return { status: "success", label: "成功", tone: "success", message: "已生成 auth_file" };
   }
+  const mailStatus = String(account.mail_verify_status || account.last_status || "").toLowerCase();
+  if (mailStatus === "error" || mailStatus === "failed") {
+    return {
+      status: "failed",
+      label: account.last_error_label || errorCodeLabel(account.last_error_code || "mail_pickup_unavailable"),
+      tone: "failed",
+      message: account.last_error_hint || account.last_error || "邮箱取信失败",
+    };
+  }
+  if (mailStatus === "no_code") {
+    return {
+      status: "needs_code",
+      label: "未发现验证码",
+      tone: "needs-code",
+      message: "邮箱可以连接，但当前没有读到验证码邮件",
+    };
+  }
+  if (mailStatus === "ok") {
+    return {
+      status: "idle",
+      label: "可收件",
+      tone: "success",
+      message: "邮箱取信正常",
+    };
+  }
   const failed = rows.find((row) => {
     const job = rowState(row);
     return job.status === "failed" && isPhoneVerificationError(job.error_code, `${job.error || ""} ${job.error_hint || ""}`);
@@ -828,6 +880,10 @@ function renderSources() {
   els.sourceCategory.innerHTML = accountOptions(els.sourceCategory.value || "all");
   const accounts = filteredAccounts();
   els.sourceTotal.textContent = String(accounts.length);
+  const selectedVisible = accounts.filter((account) => state.selectedAccounts.has(account.id)).length;
+  if (els.sourceSelectAll) {
+    els.sourceSelectAll.textContent = accounts.length && selectedVisible === accounts.length ? "取消全选" : "全选";
+  }
   const size = Number(els.sourcePageSize.value || 20);
   const pages = Math.max(1, Math.ceil(accounts.length / size));
   state.sourcePage = Math.min(Math.max(1, state.sourcePage), pages);
@@ -866,10 +922,181 @@ function queueKey(account) {
   ].join("|");
 }
 
-function addSelectedToQueue() {
-  const selected = state.accounts.filter((account) => state.selectedAccounts.has(account.id));
+function selectedSourceAccounts() {
+  return state.accounts.filter((account) => state.selectedAccounts.has(account.id));
+}
+
+function accountMailVerified(account) {
+  return ["ok", "no_code"].includes(String(account.mail_verify_status || account.last_status || "").toLowerCase());
+}
+
+function accountMailFailed(account) {
+  return ["error", "failed"].includes(String(account.mail_verify_status || account.last_status || "").toLowerCase());
+}
+
+function accountFetchPayload(account) {
+  if (account.source === "temp") {
+    return {
+      source: "temp",
+      provider: "auto",
+      limit: 12,
+      emails: [account.email],
+      temp_addresses: [{
+        email: account.email,
+        jwt: account.jwt,
+        base_url: account.base_url,
+        site_password: account.site_password,
+      }],
+      accounts: [],
+    };
+  }
+  return {
+    source: "microsoft",
+    provider: "auto",
+    limit: 12,
+    emails: [account.email],
+    accounts: [{
+      email: account.email,
+      password: account.password,
+      client_id: account.client_id,
+      refresh_token: account.refresh_token,
+    }],
+    temp_addresses: [],
+  };
+}
+
+function messageLooksLikeVerification(message) {
+  const type = String(message?.mail_type || "").toLowerCase();
+  if (type === "verification") return true;
+  if (Array.isArray(message?.codes) && message.codes.length) return true;
+  const text = [
+    message?.subject,
+    message?.sender,
+    message?.preview,
+    message?.body,
+  ].join(" ").toLowerCase();
+  return /验证码|verification|verify|code|one-time|openai|chatgpt/.test(text);
+}
+
+function applyMailboxVerifyResult(account, result) {
+  const messages = Array.isArray(result?.messages) ? result.messages : [];
+  const hasCode = messages.some(messageLooksLikeVerification);
+  account.last_check_at = result?.checked_at || new Date().toISOString();
+  account.last_message_count = Number(result?.message_count ?? messages.length ?? 0);
+  account.last_error = "";
+  account.last_error_code = "";
+  account.last_error_label = "";
+  account.last_error_hint = "";
+  if (!result?.ok) {
+    const rawError = (result?.errors || []).filter(Boolean).join("；") || result?.error || "收信失败";
+    const code = result?.error_code || inferErrorCode({ error: rawError, error_hint: result?.error_hint || "" }) || "mail_pickup_unavailable";
+    account.mail_verify_status = "error";
+    account.last_status = "error";
+    account.last_error = compactText(rawError, 180);
+    account.last_error_code = code;
+    account.last_error_label = result?.error_label || errorCodeLabel(code);
+    account.last_error_hint = result?.error_hint || account.last_error_label;
+    return { status: "failed", code, label: account.last_error_label };
+  }
+  account.mail_verify_status = hasCode ? "ok" : "no_code";
+  account.last_status = account.mail_verify_status;
+  return {
+    status: hasCode ? "ok" : "no_code",
+    code: hasCode ? "" : "mail_verify_no_code",
+    label: hasCode ? "可收件，已发现验证码邮件" : "可收件，未发现验证码邮件",
+  };
+}
+
+async function verifySelectedMailboxes() {
+  const selected = selectedSourceAccounts();
   if (!selected.length) {
     toast("先在左侧选择邮箱");
+    return;
+  }
+  const oldText = els.verifySelectedSources?.textContent || "验证邮箱";
+  if (els.verifySelectedSources) {
+    els.verifySelectedSources.disabled = true;
+    els.verifySelectedSources.textContent = "验证中";
+  }
+  addLog(`验证邮箱：${selected.length} 个`, "info", { step: "mail_verify" });
+  let ok = 0;
+  let noCode = 0;
+  let failed = 0;
+  try {
+    for (const account of selected) {
+      addLog(`${account.email} 验证邮箱`, "info", { step: "mail_verify", email: account.email });
+      try {
+        const response = await fetch("/client-api/fetch", {
+          method: "POST",
+          headers: apiHeaders(),
+          body: JSON.stringify(accountFetchPayload(account)),
+        });
+        const data = await readJsonResponse(response, "验证邮箱失败");
+        const result = (data.results || []).find((item) => accountEmailKey(item?.email) === accountEmailKey(account.email)) || (data.results || [])[0];
+        const applied = applyMailboxVerifyResult(account, result || {
+          ok: false,
+          error_code: "mail_pickup_unavailable",
+          error_label: "收信失败",
+          error: "邮箱没有返回取信结果",
+          messages: [],
+        });
+        if (applied.status === "ok") {
+          ok += 1;
+          addLog(`${account.email} 可收件，已发现验证码邮件`, "success", { step: "mail_verify", email: account.email });
+        } else if (applied.status === "no_code") {
+          noCode += 1;
+          addLog(`${account.email} 可收件，未发现验证码邮件`, "warning", { error_code: "mail_verify_no_code", email: account.email });
+        } else {
+          failed += 1;
+          addLog(`${account.email} ${applied.label}`, "error", { error_code: applied.code || "mail_pickup_unavailable", email: account.email });
+        }
+      } catch (error) {
+        failed += 1;
+        const details = error.details || { error: error.message || "验证邮箱失败", error_code: "mail_pickup_unavailable" };
+        applyMailboxVerifyResult(account, {
+          ok: false,
+          error: details.error,
+          error_code: details.error_code || "mail_pickup_unavailable",
+          error_label: errorCodeLabel(details.error_code || "mail_pickup_unavailable"),
+          error_hint: details.error_hint || "",
+          messages: [],
+        });
+        addLog(`${account.email} ${errorCodeLabel(details.error_code || "mail_pickup_unavailable")}`, "error", {
+          error_code: details.error_code || "mail_pickup_unavailable",
+          email: account.email,
+        });
+      }
+    }
+    saveJson(STORAGE_KEYS.accounts, state.accounts);
+    renderSources();
+    toast(`验证完成：可用 ${ok + noCode}，失败 ${failed}`);
+    addLog(`验证完成：有验证码 ${ok}，未发现验证码 ${noCode}，失败 ${failed}`, failed ? "warning" : "success", { step: "mail_verify" });
+  } finally {
+    if (els.verifySelectedSources) {
+      els.verifySelectedSources.disabled = false;
+      els.verifySelectedSources.textContent = oldText;
+    }
+  }
+}
+
+function addSelectedToQueue() {
+  const selected = selectedSourceAccounts();
+  if (!selected.length) {
+    toast("先在左侧选择邮箱");
+    return;
+  }
+  const failed = selected.filter(accountMailFailed);
+  const unverified = selected.filter((account) => !accountMailVerified(account) && !accountMailFailed(account));
+  if (failed.length || unverified.length) {
+    failed.forEach((account) => addLog(`${account.email} ${account.last_error_label || "取码邮箱不可用"}`, "error", {
+      error_code: account.last_error_code || "mail_pickup_unavailable",
+      email: account.email,
+    }));
+    if (unverified.length) {
+      addLog(`有 ${unverified.length} 个邮箱还没有验证，先点“验证邮箱”`, "warning", { error_code: "mail_verification_required" });
+    }
+    toast("请先验证邮箱，失败邮箱不会加入队列");
+    renderSources();
     return;
   }
   const byEmail = new Map(state.queue.map((row) => [queueKey(row), row]));
@@ -904,7 +1131,7 @@ function addSelectedToQueue() {
 }
 
 async function removeSelectedSources() {
-  const selected = state.accounts.filter((account) => state.selectedAccounts.has(account.id));
+  const selected = selectedSourceAccounts();
   if (!selected.length) {
     toast("先选择要移除的邮箱");
     return;
@@ -2607,6 +2834,9 @@ els.sourceSelectAll.addEventListener("click", () => {
   renderSources();
 });
 els.addSelected.addEventListener("click", addSelectedToQueue);
+if (els.verifySelectedSources) {
+  els.verifySelectedSources.addEventListener("click", verifySelectedMailboxes);
+}
 if (els.removeSelectedSources) {
   els.removeSelectedSources.addEventListener("click", removeSelectedSources);
 }

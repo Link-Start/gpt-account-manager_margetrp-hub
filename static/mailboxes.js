@@ -271,7 +271,7 @@ function accountMissingCredential(account) {
 
 function accountKindLabel(account) {
   if (account.source === "temp") return "JWT";
-  return usableSecret(account.password) ? "微软 OAuth+密码" : "微软 OAuth";
+  return usableSecret(account.password) ? "Graph+IMAP+密码" : "Graph/IMAP";
 }
 
 function accountHasError(account) {

@@ -8,7 +8,7 @@
 
 它现在主要处理几类事情：
 
-- Outlook / Microsoft OAuth 邮箱批量导入和取信。
+- Outlook / Microsoft Graph + IMAP 邮箱批量导入和取信。
 - 临时邮箱 JWT 批量导入和取信。
 - 邮件验证码检索、本地邮件缓存、搜索、复制和本地删除。
 - 账号分组、封禁/异常标记、刷新队列管理。
@@ -35,7 +35,7 @@
 - 前端是原生 HTML / CSS / JavaScript，没有前端构建步骤，部署时直接解压即可运行。
 - 浏览器优先保存数据：邮箱资料、分类、邮件缓存、忽略列表、CPA 设置默认保存在 `localStorage`。
 - 服务端工作区隔离：普通客户端调用服务端辅助 API 时，会发送浏览器生成的 `ctgptm.workspaceId`，服务端写入 `data/workspaces/<workspace-id>/`。
-- 邮箱链路独立：Microsoft 账号走 Graph / OAuth / IMAP 相关逻辑；临时邮箱走 Cloudflare Temp Email Worker 兼容 API。
+- 邮箱链路独立：Microsoft 账号走 Graph / IMAP 取信链路；临时邮箱走 Cloudflare Temp Email Worker 兼容 API。
 - CPA 仓管链路独立：通过目标 CPA 管理端点扫描、诊断、删除或替换 auth file，管理密钥不写入本工具服务端文件。
 - OAuth 刷新链路使用后端协议状态机，生成 CPA / Sub2API 可用的 auth JSON；刷新时要求显式填写代理 URL，避免误用 VPS 默认出口。
 - 自检、管理员页和管理员 API 在设置 `MAIL_PICKUP_ADMIN_TOKEN` 后变成私有入口。
@@ -50,6 +50,14 @@
 - `/login.html`：管理员登录页，写入 HttpOnly cookie，并可在当前浏览器记住 token。
 - `/admin.html`：管理员临时邮箱 JWT 提取和公共池导出辅助页。
 - `/health.html`：部署自检页，公共部署时需要管理员 token/cookie。
+
+## 界面截图
+
+下面是实际页面渲染后的脱敏截图，邮箱、token、代理和账号标识都已经打码。
+
+![凭证刷新工作台](docs/screenshots/refresh-workbench-masked.png)
+
+![邮箱管理页](docs/screenshots/mailbox-manager-masked.png)
 
 ## 数据边界
 
