@@ -51,6 +51,33 @@ const state = {
   logThrottle: new Map(),
 };
 
+const MAX_LOGIN_ATTEMPTS = 2;
+const ACCOUNT_COOLDOWN_MS = 6500;
+const AUTO_RETRYABLE_CODES = new Set([
+  "network_incomplete_read",
+  "login_network_blocked",
+  "oauth_session_missing",
+  "oauth_invalid_auth_step",
+  "invalid_auth_step",
+  "verification_code_missing",
+]);
+const NON_RETRYABLE_CODES = new Set([
+  "proxy_required",
+  "proxy_format_invalid",
+  "mail_credentials_missing",
+  "mail_pickup_unavailable",
+  "phone_verification_required",
+  "account_banned",
+  "account_not_found",
+  "unsupported_country_region_territory",
+  "csrf_or_risk_blocked",
+  "risk_blocked",
+  "openai_turnstile_challenge",
+  "openai_security_verification",
+  "openai_auth_risk_blocked",
+  "request_forbidden",
+]);
+
 const els = {
   sourceTotal: document.querySelector("#sourceTotal"),
   sourceSearch: document.querySelector("#sourceSearch"),
@@ -230,6 +257,7 @@ function parseErrorPayload(data, fallback = "启动失败") {
     error: data?.error || data?.message || fallback,
     error_code: data?.error_code || data?.code || "",
     error_hint: data?.error_hint || data?.hint || "",
+    retryable: data?.retryable,
   };
 }
 
@@ -239,6 +267,7 @@ const ERROR_MANUAL = {
   proxy_check_failed: "代理检测失败",
   proxy_ip_duplicate: "代理出口重复",
   mail_credentials_missing: "缺取码邮箱",
+  mail_pickup_unavailable: "取码邮箱不可用",
   admin_required: "需要管理员登录",
   temp_sync_config_missing: "临时邮箱同步配置缺失",
   temp_sync_failed: "临时邮箱同步失败",
@@ -466,6 +495,48 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isRealSecret(value) {
+  const text = String(value || "").trim();
+  return Boolean(text) && !isMaskedSecret(text);
+}
+
+function hasLocalPickupSecrets(payload) {
+  return (payload.accounts || []).some((item) => isRealSecret(item.client_id) && isRealSecret(item.refresh_token))
+    || (payload.temp_addresses || []).some((item) => isRealSecret(item.jwt));
+}
+
+function pickupSourceForPayload(payload) {
+  if ((payload.temp_addresses || []).length && !(payload.accounts || []).length) return "temp";
+  if ((payload.accounts || []).length && !(payload.temp_addresses || []).length) return "microsoft";
+  return "all";
+}
+
+function shouldAutoRetry(details) {
+  const code = inferErrorCode(details || {});
+  if (!code || NON_RETRYABLE_CODES.has(code)) return false;
+  if (details?.retryable === false) return false;
+  return AUTO_RETRYABLE_CODES.has(code);
+}
+
+async function cooldownBeforeRetry(row, details, attempt) {
+  const code = inferErrorCode(details || {});
+  const seconds = Math.round(ACCOUNT_COOLDOWN_MS / 1000);
+  addLog(`${row.email} ${errorCodeLabel(code)}，冷却 ${seconds} 秒后自动重试一次`, "warning", {
+    error_code: code,
+    email: row.email,
+  });
+  await sleep(ACCOUNT_COOLDOWN_MS);
+  row.status = "queued";
+  row.error = "";
+  row.error_code = "";
+  row.error_hint = "";
+  row.jobId = "";
+  row.retry_count = attempt;
+  state.jobs.set(row.id, { status: "queued", error: "", logs: row.logs || [] });
+  saveQueue();
+  renderQueue();
+}
+
 function proxyFormatError(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -494,12 +565,14 @@ function failRow(row, details) {
   row.error = details.error || "启动失败";
   row.error_code = details.error_code || "";
   row.error_hint = details.error_hint || "";
+  row.retryable = details.retryable;
   state.jobs.set(row.id, {
     status: "failed",
     jobId: row.jobId || "",
     error: row.error,
     error_code: row.error_code,
     error_hint: row.error_hint,
+    retryable: row.retryable,
     logs: row.logs || [],
   });
   saveQueue();
@@ -896,6 +969,7 @@ function loginPayload(row) {
     use_proxy: true,
     proxy_url: isCpa ? row.proxy_url || els.proxyUrl.value.trim() : els.proxyUrl.value.trim(),
     login_strategy: "protocol",
+    use_stored_mail_credentials: true,
     email,
     password,
     row: {
@@ -1001,7 +1075,9 @@ async function checkUniqueProxy(row, payload) {
     }
     if (!state.runProxyIps.has(ip)) {
       state.runProxyIps.add(ip);
-      addLog(`${row.email} 代理出口 ip=${ip}`, "success", { step: "egress", email: row.email });
+      const loc = String(data.loc || "").trim();
+      const colo = String(data.colo || "").trim();
+      addLog(`${row.email} 代理出口 ip=${ip}${loc ? ` loc=${loc}` : ""}${colo ? ` colo=${colo}` : ""}`, "success", { step: "egress", email: row.email });
       payload.proxy_session = proxySession;
       row.proxy_ip = ip;
       return { ip, proxySession };
@@ -1016,6 +1092,54 @@ async function checkUniqueProxy(row, payload) {
     error_hint: "当前代理没有为每个账号换出不同 IP，请更换代理配置或降低批量数量",
   };
   throw error;
+}
+
+async function preflightMailPickup(row, payload) {
+  if (!hasLocalPickupSecrets(payload)) {
+    addLog(`${row.email} 使用服务端工作区保存的取码资料`, "info", { step: "mail_credentials", email: row.email });
+    return true;
+  }
+  addLog(`${row.email} 预检取码邮箱`, "info", { step: "mail_credentials", email: row.email });
+  const response = await fetch("/client-api/fetch", {
+    method: "POST",
+    headers: apiHeaders(),
+    body: JSON.stringify({
+      source: pickupSourceForPayload(payload),
+      provider: "auto",
+      limit: 1,
+      emails: [payload.email],
+      accounts: payload.accounts || [],
+      temp_addresses: payload.temp_addresses || [],
+    }),
+  });
+  let data;
+  try {
+    data = await readJsonResponse(response, "取码邮箱预检失败");
+  } catch (error) {
+    error.details = {
+      ...(error.details || {}),
+      error: error.details?.error || error.message || "取码邮箱预检失败",
+      error_code: error.details?.error_code || "mail_pickup_unavailable",
+      error_hint: error.details?.error_hint || "登录前无法稳定读取这个邮箱，后续也无法自动提交验证码；请先修复邮箱/JWT/Outlook 凭证。",
+    };
+    throw error;
+  }
+  const result = (data.results || []).find((item) => accountEmailKey(item?.email) === accountEmailKey(payload.email)) || (data.results || [])[0];
+  if (result && !result.ok) {
+    const details = {
+      error: result.error_label || result.error || (result.errors || [])[0] || "取码邮箱不可用",
+      error_code: result.error_code || "mail_pickup_unavailable",
+      error_hint: result.error_hint || "登录前无法稳定读取这个邮箱，后续也无法自动提交验证码；请先修复邮箱/JWT/Outlook 凭证。",
+      retryable: result.retryable,
+    };
+    throw Object.assign(new Error(details.error), { details });
+  }
+  if (!result) {
+    addLog(`${row.email} 取码邮箱未返回预检结果，继续尝试登录`, "warning", { step: "mail_credentials", email: row.email });
+    return true;
+  }
+  addLog(`${row.email} 取码邮箱可用`, "success", { step: "mail_credentials", email: row.email });
+  return true;
 }
 
 function applyJobToRow(row, job, current = rowState(row)) {
@@ -1062,6 +1186,7 @@ function applyJobToRow(row, job, current = rowState(row)) {
     row.error = "需要手机验证，已按失败处理";
   }
   row.error_hint = job.error_hint || "";
+  row.retryable = job.retryable;
   row.logs = job.logs || [];
   state.jobs.set(row.id, {
     status: row.status,
@@ -1069,6 +1194,7 @@ function applyJobToRow(row, job, current = rowState(row)) {
     error: row.error,
     error_code: row.error_code,
     error_hint: row.error_hint,
+    retryable: row.retryable,
     logs: row.logs,
   });
   if (row.status === "success" && row.auth_file) {
@@ -1129,42 +1255,58 @@ async function startLogin(row) {
     failRow(row, missingCredentialDetails(row));
     return;
   }
-  row.status = "queued";
-  row.error = "";
-  row.error_code = "";
-  row.error_hint = "";
-  state.jobs.set(row.id, { status: "queued", error: "", logs: [] });
-  saveQueue();
-  renderQueue();
-  addLog(`${row.email} 检查取码邮箱`, "info", { step: "mail_credentials", email: row.email });
-  try {
-    await checkUniqueProxy(row, payload);
-    row.status = "running";
-    state.jobs.set(row.id, { status: "running", error: "", logs: [] });
+  for (let attempt = 1; attempt <= MAX_LOGIN_ATTEMPTS; attempt += 1) {
+    row.status = "queued";
+    row.error = "";
+    row.error_code = "";
+    row.error_hint = "";
+    row.retryable = undefined;
+    row.jobId = "";
+    state.jobs.set(row.id, { status: "queued", error: "", logs: row.logs || [] });
     saveQueue();
     renderQueue();
-    addLog(`${row.email} 启动邮箱登录账号`, "info", { step: "start", email: row.email });
-    const response = await fetch("/client-api/cpa/login-start", {
-      method: "POST",
-      headers: apiHeaders(),
-      body: JSON.stringify(payload),
-    });
-    const data = await readJsonResponse(response, "启动失败");
-    if (!data.success) {
-      const details = parseErrorPayload(data, "启动失败");
-      const error = new Error(details.error || "启动失败");
-      error.details = details;
-      throw error;
+    addLog(`${row.email} 检查取码邮箱`, "info", { step: "mail_credentials", email: row.email });
+    try {
+      if (attempt === 1) await preflightMailPickup(row, payload);
+      const attemptPayload = { ...payload, retry_attempt: attempt };
+      await checkUniqueProxy(row, attemptPayload);
+      row.status = "running";
+      state.jobs.set(row.id, { status: "running", error: "", logs: [] });
+      saveQueue();
+      renderQueue();
+      addLog(`${row.email} 启动邮箱登录账号${attempt > 1 ? `（第 ${attempt} 次）` : ""}`, "info", { step: "start", email: row.email });
+      const response = await fetch("/client-api/cpa/login-start", {
+        method: "POST",
+        headers: apiHeaders(),
+        body: JSON.stringify(attemptPayload),
+      });
+      const data = await readJsonResponse(response, "启动失败");
+      if (!data.success) {
+        const details = parseErrorPayload(data, "启动失败");
+        const error = new Error(details.error || "启动失败");
+        error.details = details;
+        throw error;
+      }
+      row.jobId = data.job?.job_id || "";
+      row.status = data.job?.status || "queued";
+      state.jobs.set(row.id, { status: row.status, jobId: row.jobId, error: "", logs: [] });
+      saveQueue();
+      if (row.jobId) {
+        await waitForJob(row, row.jobId);
+      }
+      const current = rowState(row);
+      if (current.status !== "failed" || attempt >= MAX_LOGIN_ATTEMPTS || !shouldAutoRetry(current)) {
+        break;
+      }
+      await cooldownBeforeRetry(row, current, attempt);
+    } catch (error) {
+      const details = error.details || { error: error.message || "启动失败", error_code: "login_failed" };
+      failRow(row, details);
+      if (attempt >= MAX_LOGIN_ATTEMPTS || !shouldAutoRetry(details)) {
+        break;
+      }
+      await cooldownBeforeRetry(row, details, attempt);
     }
-    row.jobId = data.job?.job_id || "";
-    row.status = data.job?.status || "queued";
-    state.jobs.set(row.id, { status: row.status, jobId: row.jobId, error: "", logs: [] });
-    saveQueue();
-    if (row.jobId) {
-      await waitForJob(row, row.jobId);
-    }
-  } catch (error) {
-    failRow(row, error.details || { error: error.message || "启动失败" });
   }
   renderQueue();
 }
@@ -1184,8 +1326,12 @@ async function startRows(rows) {
   if (els.loginConcurrency) els.loginConcurrency.value = "1";
   addLog(`开始执行：${rows.length} 个账号，单账号顺序处理`, "info");
   try {
-    for (const row of rows) {
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
       await startLogin(row);
+      if (index < rows.length - 1) {
+        await sleep(1500);
+      }
     }
   } finally {
     els.startSelected.disabled = false;
