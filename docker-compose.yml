@@ -19,3 +19,4 @@ services:
       MAIL_PICKUP_NODE_BIN: node
     volumes:
       - ./data:/app/data
+      - ./.cache:/app/.cache

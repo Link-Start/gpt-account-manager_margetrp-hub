@@ -66,12 +66,38 @@ MAIL_PICKUP_ADMIN_TOKEN=换成一串长随机令牌
 GPT_ACCOUNT_MANAGER_TEMP_WORKER_URL=https://your-temp-worker.example
 ```
 
-容器会把数据写到当前目录的 `data/`，升级时保留这个目录即可：
+容器会把数据写到当前目录的 `data/`，缓存写到 `.cache/`。升级时保留这两个目录即可：
 
 ```bash
 git pull
 docker compose up -d --build
 ```
+
+### 从旧 systemd 部署迁移到 Docker
+
+如果你的云端已经按旧方式跑在 `/opt/ctgptm-mail-assistant`，可以用迁移脚本平移到 Docker。它会做这些事：
+
+- 备份旧目录和 `/etc/ctgptm-mail-assistant.env`。
+- 把旧 `data/` 复制到 Docker 目录 `/opt/gpt-account-manager/data`。
+- 把旧环境变量复制成 Docker 使用的 `.env`。
+- 先构建镜像，健康检查通过后再停用旧 systemd 服务。
+- 如果 Docker 启动失败，会尝试回滚并重新启动旧服务。
+
+在新版源码目录里执行：
+
+```bash
+sudo bash deploy/migrate-systemd-to-docker.sh
+```
+
+迁移成功后，以后升级只需要：
+
+```bash
+cd /opt/gpt-account-manager
+git pull
+docker compose up -d --build
+```
+
+旧目录不会自动删除。确认 Docker 稳定后，再手动清理旧备份。
 
 ## 4. 上传发布包
 

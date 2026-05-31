@@ -76,6 +76,12 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+已有旧 VPS 部署时，可以用迁移脚本把 `/opt/ctgptm-mail-assistant` 和旧环境变量平移到 Docker：
+
+```bash
+sudo bash deploy/migrate-systemd-to-docker.sh
+```
+
 打开：
 
 ```text
