@@ -72,7 +72,7 @@ LOGIN_HISTORY_FILE = DATA_DIR / "login_history.json"
 LOGIN_DEBUG_DIR = DATA_DIR / "login_debug"
 UPGRADE_REQUEST_FILE = DATA_DIR / "upgrade_request.json"
 UPGRADE_RESULT_FILE = DATA_DIR / "upgrade_result.json"
-APP_VERSION = "20260531-accordion-sync"
+APP_VERSION = "20260531-warehouse-plan-stats"
 
 DEFAULT_HOST = os.environ.get("MAIL_PICKUP_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("MAIL_PICKUP_PORT", "8765"))
@@ -4158,7 +4158,7 @@ def cpa_upload_auth_file(base_url: str, management_key: str, name: str, auth_fil
     }
 
 
-def cpa_candidates(payload: dict[str, Any]) -> tuple[str, str, int, list[dict[str, Any]]]:
+def cpa_candidates(payload: dict[str, Any]) -> tuple[str, str, int, list[dict[str, Any]], int]:
     base_url = normalize_cpa_base_url(coerce_text(payload.get("base_url") or payload.get("baseUrl")) or "http://localhost:8317")
     management_key = coerce_text(payload.get("management_key") or payload.get("managementKey"))
     if not management_key:
@@ -4166,11 +4166,12 @@ def cpa_candidates(payload: dict[str, Any]) -> tuple[str, str, int, list[dict[st
     validate_cpa_base_url(base_url)
     max_items = max(1, min(int(payload.get("max_items") or payload.get("maxItems") or 20), 50))
     files = cpa_list_auth_files(base_url, management_key)
-    candidates = [
+    filtered = [
         item for item in files
         if cpa_item_type(item) in {"", "codex", "chatgpt", "openai"}
-    ][:max_items]
-    return base_url, management_key, max_items, candidates
+    ]
+    candidates = filtered[:max_items]
+    return base_url, management_key, max_items, candidates, len(filtered)
 
 
 def cpa_diagnosis_action_hint(status: str) -> str:
@@ -4267,7 +4268,7 @@ def diagnose_cpa_candidate(base_url: str, management_key: str, item: dict[str, A
 
 
 def scan_cpa_401(payload: dict[str, Any]) -> dict[str, Any]:
-    base_url, management_key, max_items, candidates = cpa_candidates(payload)
+    base_url, management_key, max_items, candidates, available_total = cpa_candidates(payload)
     results = []
     for item in candidates:
         if cpa_is_401_item(item):
@@ -4294,19 +4295,29 @@ def scan_cpa_401(payload: dict[str, Any]) -> dict[str, Any]:
         if item.get("refreshable")
         or item.get("status") in {"active", "refreshed", "rt_rotated", "banned", "risk_blocked", "usage_limit_reached", "rt_invalid", "session_expired", "needs_login", "probe_failed", "not_openai_auth"}
     ]
+    refreshable_count = len([item for item in diagnosed if item.get("refreshable")])
+    error_count = len([
+        item for item in surfaced
+        if item.get("status") not in {"active", "refreshed", "rt_rotated", "not_openai_auth"}
+    ])
     return {
         "success": True,
         "total": len(candidates),
+        "available_total": available_total,
         "max_items": max_items,
         "candidates": surfaced,
         "results": results,
         "diagnostics": diagnosed,
         "summary": {
             "total": len(candidates),
+            "available_total": available_total,
             "candidates": len(surfaced),
+            "error_accounts": error_count,
             "diagnosed": len(diagnosed),
             "credential_ok": len([item for item in diagnosed if item.get("status") in {"active", "refreshed", "rt_rotated"}]),
-            "needs_login": len([item for item in diagnosed if item.get("refreshable")]),
+            "needs_login": refreshable_count,
+            "refreshable": refreshable_count,
+            "unscanned": max(0, available_total - len(candidates)),
             "banned": len([item for item in diagnosed if item.get("status") == "banned"]),
             "risk": len([item for item in diagnosed if item.get("status") == "risk_blocked"]),
             "limited": len([item for item in diagnosed if item.get("status") == "usage_limit_reached"]),
@@ -5206,7 +5217,7 @@ def refresh_lifecycle(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def refresh_cpa_lifecycle(payload: dict[str, Any]) -> dict[str, Any]:
-    base_url, management_key, max_items, candidates = cpa_candidates(payload)
+    base_url, management_key, max_items, candidates, _available_total = cpa_candidates(payload)
     upload_success = bool(payload.get("upload_success") or payload.get("uploadSuccess"))
     only_401 = bool(payload.get("only_401", True))
     rows = candidates
