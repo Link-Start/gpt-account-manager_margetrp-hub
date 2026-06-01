@@ -98,6 +98,8 @@
     "批量复制": "Copy Selected",
     "批量设置分组": "Set Group",
     "导出备份": "Export Backup",
+    "导出邮箱 TXT": "Export Mailbox TXT",
+    "导出 JSON 备份": "Export JSON Backup",
     "批量删除": "Batch Delete",
     "批量导入": "Batch Import",
     "批量提取": "Batch Extract",

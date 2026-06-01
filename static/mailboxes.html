@@ -126,7 +126,8 @@
           <label class="mailbox-select-all"><input id="selectAllMailboxes" type="checkbox"> 全选当前页</label>
           <button id="copySelectedMailboxes" type="button">批量复制</button>
           <button id="groupSelectedMailboxes" type="button">批量设置分组</button>
-          <button id="exportMailboxesBtn" type="button">导出备份</button>
+          <button id="exportMailboxesBtn" type="button">导出邮箱 TXT</button>
+          <button id="exportMailboxBackupBtn" type="button">导出 JSON 备份</button>
           <button id="deleteSelectedMailboxes" class="danger" type="button">批量删除</button>
           <span id="mailboxActionStatus">等待同步。</span>
         </div>
@@ -220,7 +221,7 @@
     </section>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="/mailboxes.js?v=20260601-mailbox-i18n-fix" defer></script>
+  <script src="/mailboxes.js?v=20260602-mailbox-export-lines" defer></script>
 </body>
 </html>
 

@@ -827,12 +827,12 @@ async function syncAccountsFromServer({ silent = false } = {}) {
   if (!hasAdminToken()) return false;
   try {
     const [accountsResponse, tempResponse] = await Promise.all([
-      fetch("/api/accounts", { headers: apiHeaders(), cache: "no-store" }),
-      fetch("/api/temp-addresses", { headers: apiHeaders(), cache: "no-store" }),
+      fetch("/client-api/accounts", { headers: apiHeaders(), cache: "no-store" }),
+      fetch("/client-api/temp-addresses", { headers: apiHeaders(), cache: "no-store" }),
     ]);
     const [accountsData, tempData] = await Promise.all([
-      readJsonResponse(accountsResponse, "/api/accounts"),
-      readJsonResponse(tempResponse, "/api/temp-addresses"),
+      readJsonResponse(accountsResponse, "/client-api/accounts"),
+      readJsonResponse(tempResponse, "/client-api/temp-addresses"),
     ]);
     if (!accountsResponse.ok) {
       throw new Error(accountsData.error || accountsResponse.statusText || "服务端账号列表读取失败");

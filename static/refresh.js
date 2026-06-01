@@ -34,7 +34,7 @@ repairLocalStorageKeys(Object.values(STORAGE_KEYS));
 const storedRefreshQueue = loadJson(STORAGE_KEYS.refreshQueue, []);
 const normalizedRefreshQueue = normalizeQueue(storedRefreshQueue);
 if (JSON.stringify(storedRefreshQueue) !== JSON.stringify(normalizedRefreshQueue)) {
-  saveJson(STORAGE_KEYS.refreshQueue, normalizedRefreshQueue);
+  saveJson(STORAGE_KEYS.refreshQueue, normalizedRefreshQueue.map(compactQueueRowForStorage));
 }
 
 const state = {
@@ -194,7 +194,16 @@ function loadJson(key, fallback) {
 }
 
 function saveJson(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (error) {
+    if (/quota|exceeded/i.test(String(error?.name || error?.message || ""))) {
+      console.warn("localStorage quota exceeded; skipped", key);
+      return false;
+    }
+    throw error;
+  }
 }
 
 function getWorkspaceId() {
@@ -770,6 +779,20 @@ function normalizeQueue(value) {
   });
 }
 
+function compactQueueRowForStorage(row) {
+  const logs = Array.isArray(row.logs) ? row.logs.slice(-30).map((entry) => ({
+    level: entry?.level || "info",
+    message: String(entry?.message || "").slice(0, 220),
+    step: entry?.step || "",
+    error_code: entry?.error_code || "",
+    created_at: entry?.created_at || entry?.time || "",
+  })) : [];
+  return {
+    ...row,
+    logs,
+  };
+}
+
 function normalizePhonePool(value) {
   if (!Array.isArray(value)) return [];
   const seen = new Set();
@@ -796,7 +819,7 @@ function normalizePhonePool(value) {
 }
 
 function saveQueue() {
-  saveJson(STORAGE_KEYS.refreshQueue, state.queue);
+  saveJson(STORAGE_KEYS.refreshQueue, state.queue.map(compactQueueRowForStorage));
 }
 
 function savePhonePool() {
@@ -1832,17 +1855,6 @@ async function deleteCpaRows(rows) {
       .forEach((item) => addLog(`${item.email || item.name || ""} CPA 删除失败`, "warning", { error_code: "delete_failed" }));
   }
   return deleted;
-}
-
-async function deleteWorkspaceMailCredentials(emails) {
-  if (!emails.length) return { microsoft: 0, temp: 0 };
-  const response = await fetch("/client-api/accounts/delete", {
-    method: "POST",
-    headers: apiHeaders(),
-    body: JSON.stringify({ emails }),
-  });
-  const data = await readJsonResponse(response, "邮箱池删除失败");
-  return data.deleted || { microsoft: 0, temp: 0 };
 }
 
 async function cleanFailedRows() {

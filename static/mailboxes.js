@@ -29,6 +29,7 @@ const els = {
   copySelected: document.querySelector("#copySelectedMailboxes"),
   groupSelected: document.querySelector("#groupSelectedMailboxes"),
   exportBtn: document.querySelector("#exportMailboxesBtn"),
+  exportBackupBtn: document.querySelector("#exportMailboxBackupBtn"),
   deleteSelected: document.querySelector("#deleteSelectedMailboxes"),
   actionStatus: document.querySelector("#mailboxActionStatus"),
   tableBody: document.querySelector("#mailboxTableBody"),
@@ -82,7 +83,17 @@ function loadJson(key, fallback) {
 }
 
 function saveJson(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (error) {
+    if (/quota|exceeded/i.test(String(error?.name || error?.message || ""))) {
+      console.warn("localStorage quota exceeded; skipped", key);
+      toast("浏览器本地存储已满，已跳过本地缓存写入");
+      return false;
+    }
+    throw error;
+  }
 }
 
 function getWorkspaceId() {
@@ -607,6 +618,15 @@ async function copyText(text, message) {
 
 function downloadJsonFile(fileName, value) {
   const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json;charset=utf-8" });
+  downloadBlob(fileName, blob);
+}
+
+function downloadTextFile(fileName, text) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  downloadBlob(fileName, blob);
+}
+
+function downloadBlob(fileName, blob) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -615,6 +635,11 @@ function downloadJsonFile(fileName, value) {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+function exportableRows() {
+  const selected = selectedRows();
+  return selected.length ? selected : filteredAccounts();
 }
 
 async function syncMailboxes({ quiet = false } = {}) {
@@ -892,6 +917,17 @@ els.copySelected.addEventListener("click", async () => {
 els.groupSelected.addEventListener("click", setSelectedGroup);
 els.deleteSelected.addEventListener("click", () => deleteAccounts(selectedRows()));
 els.exportBtn.addEventListener("click", () => {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const rows = exportableRows();
+  if (!rows.length) {
+    toast("没有可导出的邮箱");
+    return;
+  }
+  downloadTextFile(`gpt-account-manager-mailboxes-${stamp}.txt`, `${rows.map(mailboxCopyLine).join("\n")}\n`);
+  setStatus(`已按一行一个邮箱导出 ${rows.length} 条。`, "ok");
+  toast(`已导出 ${rows.length} 个邮箱 TXT`);
+});
+els.exportBackupBtn.addEventListener("click", () => {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   downloadJsonFile(`gpt-account-manager-mailboxes-${stamp}.json`, {
     exported_at: new Date().toISOString(),
