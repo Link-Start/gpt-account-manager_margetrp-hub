@@ -54,6 +54,7 @@ const state = {
   logThrottle: new Map(),
   manualCodeTimers: new Map(),
   runner: null,
+  manualCodeTarget: null,
 };
 
 const MAX_LOGIN_ATTEMPTS = 3;
@@ -150,6 +151,14 @@ const els = {
   pollSelectedPhone: document.querySelector("#pollSelectedPhone"),
   addPhoneEntry: document.querySelector("#addPhoneEntry"),
   phonePoolList: document.querySelector("#phonePoolList"),
+  manualCodeModal: document.querySelector("#manualCodeModal"),
+  manualCodeModalEyebrow: document.querySelector("#manualCodeModalEyebrow"),
+  manualCodeModalTitle: document.querySelector("#manualCodeModalTitle"),
+  manualCodeModalHint: document.querySelector("#manualCodeModalHint"),
+  manualCodeModalInput: document.querySelector("#manualCodeModalInput"),
+  closeManualCodeModal: document.querySelector("#closeManualCodeModal"),
+  cancelManualCodeModal: document.querySelector("#cancelManualCodeModal"),
+  confirmManualCodeModal: document.querySelector("#confirmManualCodeModal"),
 };
 
 const settings = loadJson(STORAGE_KEYS.refreshSettings, {});
@@ -1330,23 +1339,67 @@ function selectedSingleQueueRow() {
   return rows.length === 1 ? rows[0] : null;
 }
 
-function promptCodeForRow(row) {
-  const current = rowState(row);
-  const phoneNeeded = isPhoneVerificationError(current.error_code || row.error_code, `${current.error || ""} ${current.error_hint || ""}`);
-  const kind = phoneNeeded ? "手机" : "邮箱";
-  const previous = phoneNeeded ? (row.manual_phone_code || row.phone_code || "") : (row.manual_email_code || "");
-  const code = window.prompt(`请输入 ${row.email || row.name || ""} 的${kind}验证码`, previous || "");
-  if (code === null) return;
-  const cleaned = String(code || "").trim();
-  if (!/^\d{4,8}$/.test(cleaned)) {
-    toast(`请输入 4-8 位${kind}验证码`);
+function openManualCodeDialog(row, kind = "email") {
+  if (!row || !els.manualCodeModal || !els.manualCodeModalInput) return;
+  state.manualCodeTarget = { rowId: row.id, kind };
+  const isPhone = kind === "phone";
+  const label = isPhone ? "手机验证码" : "邮箱验证码";
+  const previous = isPhone
+    ? (row.manual_phone_code || row.phone_code || "")
+    : (row.manual_email_code || "");
+  if (els.manualCodeModalEyebrow) {
+    els.manualCodeModalEyebrow.textContent = isPhone ? "Phone Code" : "Email Code";
+  }
+  if (els.manualCodeModalTitle) {
+    els.manualCodeModalTitle.textContent = `手动输入${label}`;
+  }
+  if (els.manualCodeModalHint) {
+    const target = row.email || row.name || "当前账号";
+    els.manualCodeModalHint.textContent = `${target} 需要${label}时，可以在这里补填后继续任务。`;
+  }
+  els.manualCodeModalInput.value = String(previous || "");
+  els.manualCodeModal.hidden = false;
+  window.requestAnimationFrame(() => {
+    els.manualCodeModalInput.focus();
+    els.manualCodeModalInput.select();
+  });
+}
+
+function closeManualCodeDialog() {
+  state.manualCodeTarget = null;
+  if (els.manualCodeModal) els.manualCodeModal.hidden = true;
+  if (els.manualCodeModalInput) els.manualCodeModalInput.value = "";
+}
+
+function submitManualCodeDialog() {
+  const target = state.manualCodeTarget;
+  const input = els.manualCodeModalInput;
+  if (!target || !input) return;
+  const row = state.queue.find((item) => item.id === target.rowId);
+  if (!row) {
+    closeManualCodeDialog();
+    toast("当前账号已不在队列中");
     return;
   }
-  if (phoneNeeded) {
-    row.manual_phone_code = cleaned;
-    row.phone_code = cleaned;
+  const code = String(input.value || "").trim();
+  if (!/^\d{4,8}$/.test(code)) {
+    toast("请输入 4-8 位验证码");
+    input.focus();
+    input.select();
+    return;
+  }
+  if (target.kind === "phone") {
+    const entry = phoneEntryForRow(row);
+    row.manual_phone_code = code;
+    row.phone_code = code;
     row.phone_code_checked_at = new Date().toISOString();
-    submitManualPhoneCode(row, cleaned).catch((error) => {
+    if (entry) {
+      entry.last_code = code;
+      entry.last_checked_at = row.phone_code_checked_at;
+      entry.status = "found";
+    }
+    savePhonePool();
+    submitManualPhoneCode(row, code).catch((error) => {
       addLog(`${row.email} 手动手机验证码保存失败`, "warning", {
         email: row.email,
         error_code: "manual_phone_code_failed",
@@ -1354,12 +1407,23 @@ function promptCodeForRow(row) {
       });
     });
   } else {
-    row.manual_email_code = cleaned;
+    row.manual_email_code = code;
     queueManualEmailCodeSubmit(row);
   }
   saveQueue();
   renderQueue();
-  addLog(`${row.email} 已保存${kind}验证码`, "success", { step: phoneNeeded ? "manual_phone_code" : "manual_email_code", email: row.email });
+  renderSelectedPhoneCodePanel();
+  closeManualCodeDialog();
+  addLog(`${row.email || row.name || "当前账号"} 已补填${target.kind === "phone" ? "手机" : "邮箱"}验证码`, "success", {
+    step: target.kind === "phone" ? "manual_phone_code" : "manual_email_code",
+    email: row.email,
+  });
+}
+
+function promptCodeForRow(row) {
+  const current = rowState(row);
+  const phoneNeeded = isPhoneVerificationError(current.error_code || row.error_code, `${current.error || ""} ${current.error_hint || ""}`);
+  openManualCodeDialog(row, phoneNeeded ? "phone" : "email");
 }
 
 function currentPhoneMode() {
@@ -1692,33 +1756,7 @@ function saveManualPhoneCodeForSelected() {
     toast("请先只选中一个队列账号");
     return;
   }
-  const input = window.prompt(`请输入 ${row.email || row.name || ""} 的手机验证码`, row.manual_phone_code || row.phone_code || "");
-  if (input === null) return;
-  const code = String(input || "").trim();
-  if (!/^\d{4,8}$/.test(code)) {
-    toast("请输入 4-8 位手机验证码");
-    return;
-  }
-  const entry = phoneEntryForRow(row);
-  row.manual_phone_code = code;
-  row.phone_code = code;
-  row.phone_code_checked_at = new Date().toISOString();
-  if (entry) {
-    entry.last_code = code;
-    entry.last_checked_at = row.phone_code_checked_at;
-    entry.status = "found";
-  }
-  saveQueue();
-  savePhonePool();
-  renderAll();
-  addLog(`${row.email} 已保存手机验证码：${code}`, "success", { step: "phone_code", email: row.email });
-  submitManualPhoneCode(row, code).catch((error) => {
-    addLog(`${row.email} 手动手机验证码保存失败`, "warning", {
-      email: row.email,
-      error_code: "manual_phone_code_failed",
-      error: error instanceof Error ? error.message : String(error),
-    });
-  });
+  openManualCodeDialog(row, "phone");
 }
 
 async function pollSelectedPhoneCode() {
@@ -2944,6 +2982,21 @@ if (els.saveManualPhoneCode) {
 if (els.pollSelectedPhone) {
   els.pollSelectedPhone.addEventListener("click", pollSelectedPhoneCode);
 }
+els.closeManualCodeModal?.addEventListener("click", closeManualCodeDialog);
+els.cancelManualCodeModal?.addEventListener("click", closeManualCodeDialog);
+els.confirmManualCodeModal?.addEventListener("click", submitManualCodeDialog);
+els.manualCodeModal?.addEventListener("click", (event) => {
+  if (event.target === els.manualCodeModal) closeManualCodeDialog();
+});
+els.manualCodeModalInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    submitManualCodeDialog();
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    closeManualCodeDialog();
+  }
+});
 [els.phoneModeBatch, els.phoneModeOneToOne].forEach((input) => {
   if (!input) return;
   input.addEventListener("change", () => {

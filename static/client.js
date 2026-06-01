@@ -94,7 +94,6 @@ const els = {
   tempCount: document.querySelector("#tempCount"),
   msCount: document.querySelector("#msCount"),
   mailboxTotal: document.querySelector("#mailboxTotal"),
-  categoryName: document.querySelector("#categoryName"),
   addCategoryBtn: document.querySelector("#addCategoryBtn"),
   groupByImportDateBtn: document.querySelector("#groupByImportDateBtn"),
   deleteCategoryBtn: document.querySelector("#deleteCategoryBtn"),
@@ -152,6 +151,11 @@ const els = {
   copyCodeBtn: document.querySelector("#copyCodeBtn"),
   pushRefreshBtn: document.querySelector("#pushRefreshBtn"),
   deleteMessageBtn: document.querySelector("#deleteMessageBtn"),
+  groupModal: document.querySelector("#groupModal"),
+  groupModalInput: document.querySelector("#groupModalInput"),
+  closeGroupModal: document.querySelector("#closeGroupModal"),
+  cancelGroupModal: document.querySelector("#cancelGroupModal"),
+  confirmGroupModal: document.querySelector("#confirmGroupModal"),
   toast: document.querySelector("#toast"),
 };
 
@@ -175,6 +179,8 @@ const state = {
   selectedAbnormal: new Set(),
   selected: new Set(),
   activeMessageKey: "",
+  activeMailboxId: "",
+  activeMailboxEmail: "",
   activeImportSource: "",
   activeView: "mail",
   loginJobs: new Map(),
@@ -1188,9 +1194,9 @@ function renderAccounts() {
       account.last_error_label || account.last_error || "",
     ].filter(Boolean).join(" · ");
     return `
-    <div class="mailbox-row refresh-state-${escapeHtml(stateClass)}" data-id="${escapeHtml(account.id)}">
-      <label class="mailbox-check" title="${escapeHtml(title)}">
-        <input type="checkbox" ${state.selected.has(account.id) ? "checked" : ""}>
+    <div class="mailbox-row refresh-state-${escapeHtml(stateClass)}${state.activeMailboxId === account.id ? " active" : ""}" data-id="${escapeHtml(account.id)}">
+      <input class="mailbox-check" type="checkbox" ${state.selected.has(account.id) ? "checked" : ""} title="${escapeHtml(title)}">
+      <button class="mailbox-row-main" type="button" title="${escapeHtml(title)}">
         <span>
           <strong>${escapeHtml(account.email)}</strong>
           <small class="mailbox-meta mailbox-meta-inline">
@@ -1198,7 +1204,7 @@ function renderAccounts() {
             <em>${escapeHtml(category)}</em>
           </small>
         </span>
-      </label>
+      </button>
       <button class="icon danger" type="button" aria-label="删除">×</button>
     </div>
   `;
@@ -1235,6 +1241,7 @@ function messageQueryParams() {
     mail_type: els.typeFilter?.value || "all",
     category: els.categoryFilter.value || "all",
   });
+  if (state.activeMailboxEmail) params.set("account", state.activeMailboxEmail);
   return params;
 }
 
@@ -1321,7 +1328,8 @@ function renderMessages() {
   state.page = Math.min(Math.max(1, state.page), pages);
   const pageItems = messages;
 
-  els.pageSummary.textContent = state.messagesLoading ? "读取邮件缓存中" : `${total} 封邮件`;
+  const mailboxSuffix = state.activeMailboxEmail ? ` · ${state.activeMailboxEmail}` : "";
+  els.pageSummary.textContent = state.messagesLoading ? "读取邮件缓存中" : `${total} 封邮件${mailboxSuffix}`;
   els.pageText.textContent = `${state.page} / ${pages}`;
   els.prevPage.disabled = state.page <= 1;
   els.nextPage.disabled = state.page >= pages;
@@ -1404,11 +1412,11 @@ function renderDetail(message) {
     const resizeFrame = () => {
       try {
         const doc = frame.contentDocument;
-        const available = Math.max(180, Math.min(520, els.mailDetail.clientHeight - frame.offsetTop - 20));
+        const available = Math.max(96, Math.min(520, els.mailDetail.clientHeight - frame.offsetTop - 12));
         const contentHeight = Math.max(doc.documentElement.scrollHeight, doc.body.scrollHeight, 0) + 18;
-        frame.style.height = `${Math.min(available, Math.max(180, contentHeight))}px`;
+        frame.style.height = `${Math.min(available, Math.max(96, contentHeight))}px`;
       } catch {
-        frame.style.height = "280px";
+        frame.style.height = "140px";
       }
     };
     frame.addEventListener("load", () => {
@@ -2423,6 +2431,63 @@ function closeImportDialog() {
   importPreviewText();
 }
 
+function openGroupDialog() {
+  if (!els.groupModal || !els.groupModalInput) return;
+  els.groupModal.hidden = false;
+  document.body.classList.add("modal-open");
+  els.groupModalInput.value = "";
+  setTimeout(() => els.groupModalInput.focus(), 0);
+}
+
+function closeGroupDialog() {
+  if (!els.groupModal || !els.groupModalInput) return;
+  els.groupModal.hidden = true;
+  els.groupModalInput.value = "";
+  document.body.classList.remove("modal-open");
+}
+
+function saveGroupFromModal() {
+  const name = String(els.groupModalInput?.value || "").trim();
+  if (!name) {
+    toast("请输入分组名称");
+    return;
+  }
+  ensureCategory(name);
+  saveJson(STORAGE_KEYS.categories, state.categories);
+  renderAll();
+  closeGroupDialog();
+  toast(`已添加分组：${name}`);
+}
+
+function syncActiveMailboxSelection() {
+  if (!state.activeMailboxId) {
+    state.activeMailboxEmail = "";
+    return;
+  }
+  const account = state.accounts.find((item) => item.id === state.activeMailboxId);
+  if (!account) {
+    state.activeMailboxId = "";
+    state.activeMailboxEmail = "";
+    return;
+  }
+  state.activeMailboxEmail = account.email || "";
+}
+
+function toggleMailboxFilter(account) {
+  if (!account) return;
+  if (state.activeMailboxId === account.id) {
+    state.activeMailboxId = "";
+    state.activeMailboxEmail = "";
+  } else {
+    state.activeMailboxId = account.id;
+    state.activeMailboxEmail = account.email || "";
+  }
+  state.page = 1;
+  state.activeMessageKey = "";
+  renderAccounts();
+  loadServerMessages({ silent: true });
+}
+
 async function loadImportedFile(file, textarea) {
   if (!file) return;
   const supported = /\.(txt|json|csv)$/i.test(file.name) || !file.type || file.type.startsWith("text/") || file.type.includes("json") || file.type.includes("csv");
@@ -2573,6 +2638,7 @@ function pushActiveMessageAccountToRefresh() {
   toast(exists ? "这个邮箱已在凭证刷新池" : "已推送到凭证刷新池");
 }
 function renderAll() {
+  syncActiveMailboxSelection();
   renderCategories();
   renderAccounts();
   renderMessages();
@@ -2610,6 +2676,20 @@ els.cancelImportBtn.addEventListener("click", closeImportDialog);
 els.importModal.addEventListener("click", (event) => {
   if (event.target === els.importModal) closeImportDialog();
 });
+els.groupModal?.addEventListener("click", (event) => {
+  if (event.target === els.groupModal) closeGroupDialog();
+});
+els.closeGroupModal?.addEventListener("click", closeGroupDialog);
+els.cancelGroupModal?.addEventListener("click", closeGroupDialog);
+els.confirmGroupModal?.addEventListener("click", saveGroupFromModal);
+els.groupModalInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    saveGroupFromModal();
+  } else if (event.key === "Escape") {
+    closeGroupDialog();
+  }
+});
 els.confirmImportBtn.addEventListener("click", () => {
   state.activeImportSource = els.importServiceSelect.value || state.activeImportSource || "auto";
   importAccounts(state.activeImportSource, els.importText.value);
@@ -2620,14 +2700,7 @@ els.importText.addEventListener("keydown", (event) => {
 els.importText.addEventListener("input", importPreviewText);
 els.backupLocalBtn?.addEventListener("click", backupLocalData);
 els.restoreLocalFile?.addEventListener("change", () => restoreLocalData(els.restoreLocalFile.files?.[0]));
-els.addCategoryBtn.addEventListener("click", () => {
-  const name = els.categoryName.value.trim();
-  if (!name) return;
-  ensureCategory(name);
-  els.categoryName.value = "";
-  saveJson(STORAGE_KEYS.categories, state.categories);
-  renderAll();
-});
+els.addCategoryBtn.addEventListener("click", openGroupDialog);
 els.groupByImportDateBtn?.addEventListener("click", groupAccountsByImportDate);
 els.deleteCategoryBtn.addEventListener("click", () => {
   const category = els.mailboxCategoryFilter.value;
@@ -2672,21 +2745,34 @@ els.mailboxList.addEventListener("change", (event) => {
   if (!row) return;
   const account = state.accounts.find((item) => item.id === row.dataset.id);
   if (!account) return;
-  if (event.target.matches("input[type='checkbox']")) {
+  if (event.target.matches(".mailbox-check")) {
     if (event.target.checked) state.selected.add(account.id);
     else state.selected.delete(account.id);
   }
 });
 els.mailboxList.addEventListener("click", (event) => {
   const row = event.target.closest(".mailbox-row");
-  if (!row || !event.target.matches("button")) return;
-  state.accounts = state.accounts.filter((account) => account.id !== row.dataset.id);
+  if (!row) return;
+  const account = state.accounts.find((item) => item.id === row.dataset.id);
+  if (!account) return;
+  if (event.target.closest(".mailbox-row-main")) {
+    toggleMailboxFilter(account);
+    return;
+  }
+  if (!event.target.matches("button.icon")) return;
+  state.accounts = state.accounts.filter((item) => item.id !== row.dataset.id);
   state.selected.delete(row.dataset.id);
   state.abnormalRows = state.abnormalRows.filter((item) => item.account_id !== row.dataset.id);
   state.selectedAbnormal.delete(row.dataset.id);
+  if (state.activeMailboxId === row.dataset.id) {
+    state.activeMailboxId = "";
+    state.activeMailboxEmail = "";
+    state.activeMessageKey = "";
+  }
   saveJson(STORAGE_KEYS.accounts, state.accounts);
   saveAbnormalRows();
   renderAll();
+  loadServerMessages({ silent: true });
 });
 els.mailList.addEventListener("click", (event) => {
   const deleteButton = event.target.closest(".mail-delete-one");
