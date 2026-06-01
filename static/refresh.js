@@ -981,10 +981,10 @@ function messageLooksLikeVerification(message) {
 }
 
 function applyMailboxVerifyResult(account, result) {
-  const messages = Array.isArray(result?.messages) ? result.messages : [];
-  const hasCode = messages.some(messageLooksLikeVerification);
+  const codes = Array.isArray(result?.codes) ? result.codes.filter(Boolean) : [];
+  const hasCode = Boolean(result?.has_verification_code || result?.first_code || codes.length);
   account.last_check_at = result?.checked_at || new Date().toISOString();
-  account.last_message_count = Number(result?.message_count ?? messages.length ?? 0);
+  account.last_message_count = Number(result?.message_count ?? 0);
   account.last_error = "";
   account.last_error_code = "";
   account.last_error_label = "";

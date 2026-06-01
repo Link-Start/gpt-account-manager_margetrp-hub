@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
@@ -1005,7 +1005,7 @@
     </style>
     <link rel="stylesheet" href="/forge-theme.css?v=20260531-open-source-links" />
   <script src="/nav-links.js?v=20260531-docker-dns-links" defer></script>
-  <script src="/i18n.js?v=20260601-proxy-env-clean" defer></script>
+  <script src="/i18n.js?v=20260601-server-mail-cache" defer></script>
 </head>
   <body>
     <main class="app">
@@ -1246,7 +1246,6 @@
       (() => {
         const SETTINGS_KEY = "ctgptm-cpa-warehouse-settings";
         const MAIL_ACCOUNTS_KEY = "ctgptm.mail.accounts";
-        const MAIL_MESSAGES_KEY = "ctgptm.mail.messages";
         const REFRESH_QUEUE_KEY = "ctgptm.mail.refreshQueue";
         const state = {
           busy: false,
@@ -2036,24 +2035,24 @@
             });
             const data = await response.json();
             if (!response.ok) throw new Error(data.error || "收取验证码失败");
-            const messages = data.messages || [];
-            const oldMessages = loadJson(MAIL_MESSAGES_KEY, []);
-            const byKey = new Map(oldMessages.map((message) => [
-              `${message.source}|${message.account}|${message.folder}|${message.mid}|${message.subject}|${message.received_at}`,
-              message,
-            ]));
-            messages.forEach((message) => {
-              byKey.set(`${message.source}|${message.account}|${message.folder}|${message.mid}|${message.subject}|${message.received_at}`, message);
-            });
-            localStorage.setItem(MAIL_MESSAGES_KEY, JSON.stringify([...byKey.values()]));
-            const code = messages.flatMap((message) => message.codes || [])[0];
+            const results = Array.isArray(data.results) ? data.results : [];
+            const code = firstNonEmpty(
+              data.first_code,
+              ...results.map((result) => result.first_code),
+              ...results.flatMap((result) => Array.isArray(result.codes) ? result.codes : []),
+            );
+            const messageCount = Number(
+              data.summary?.messages
+              ?? data.cached_messages
+              ?? results.reduce((sum, result) => sum + Number(result.message_count || 0), 0)
+            );
             if (code) {
               await navigator.clipboard.writeText(code);
               setStatus(elements.repairMailStatus, `已收取并复制验证码：${code}`, "ok");
               addJobLog(`已收取验证码：${code}`, "success");
               return;
             }
-            setStatus(elements.repairMailStatus, `已收取 ${messages.length} 封邮件，但没有识别到验证码。`, messages.length ? "ok" : "error");
+            setStatus(elements.repairMailStatus, `已收取 ${messageCount} 封邮件，但没有识别到验证码。`, messageCount ? "ok" : "error");
           } catch (error) {
             setStatus(elements.repairMailStatus, error instanceof Error ? error.message : "收取验证码失败", "error");
           } finally {
@@ -2508,3 +2507,4 @@
     </script>
   </body>
 </html>
+

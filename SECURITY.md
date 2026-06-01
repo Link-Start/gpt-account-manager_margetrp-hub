@@ -7,11 +7,11 @@
 - Outlook 密码 / client_id / refresh_token
 - 临时邮箱地址 JWT
 - 邮箱分组
-- 本地邮件缓存
+- 邮件缓存里的本地删除/忽略状态
 - 已忽略或已删除的本地邮件 key
 - CPA 仓管地址和 management key
 
-这些值优先存放在 `localStorage`。正常的前台收信流程不会把用户邮箱资料写入服务端全局账号池。
+这些轻量值优先存放在 `localStorage`。正常的前台收信流程不会把用户邮箱资料写入服务端全局账号池；完整邮件正文和 HTML 按工作区写入 `data/workspaces/<workspace-id>/messages.json`，前端只分页读取。
 
 当普通用户调用服务端辅助 API 时，浏览器会发送 `ctgptm.workspaceId` 生成的 `X-Workspace-Id`。服务端辅助数据按工作区写入 `data/workspaces/<workspace-id>/`，避免多个浏览器用户共用同一台 VPS 时互相读到对方的邮箱、JWT、刷新结果或登录记录。
 

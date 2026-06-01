@@ -12,7 +12,7 @@
 
 - Outlook / Microsoft Graph + IMAP 邮箱批量导入和取信。
 - 临时邮箱 JWT 批量导入和取信。
-- 邮件验证码检索、本地邮件缓存、搜索、复制和本地删除。
+- 邮件验证码检索、服务端工作区邮件缓存、搜索、复制和本地删除。
 - 账号分组、封禁/异常标记、刷新队列管理。
 - 右上角中英文界面切换，语言选择保存在当前浏览器。
 - CPA / CLIProxyAPI 仓管巡检，识别 RT 失效、会话失效、封禁、风控、额度耗尽、非 OpenAI 凭证等状态。
@@ -36,7 +36,7 @@
 
 - 后端是单进程 Python HTTP 服务，基于 `ThreadingHTTPServer`，负责静态页面、客户端 API、管理员 API、CPA 对接、OAuth 协议流程和自检。
 - 前端是原生 HTML / CSS / JavaScript，没有前端构建步骤，部署时直接解压即可运行。
-- 浏览器优先保存数据：邮箱资料、分类、邮件缓存、忽略列表、CPA 设置默认保存在 `localStorage`。
+- 浏览器优先保存轻量资料：邮箱资料、分类、忽略列表、CPA 设置默认保存在 `localStorage`；完整邮件正文和 HTML 写入服务端工作区缓存，避免浏览器存储超额。
 - 服务端工作区隔离：普通客户端调用服务端辅助 API 时，会发送浏览器生成的 `ctgptm.workspaceId`，服务端写入 `data/workspaces/<workspace-id>/`。
 - 邮箱链路独立：Microsoft 账号走 Graph / IMAP 取信链路；临时邮箱走 Cloudflare Temp Email Worker 兼容 API。
 - CPA 仓管链路独立：通过目标 CPA 管理端点扫描、诊断、删除或替换 auth file，管理密钥不写入本工具服务端文件。
@@ -64,7 +64,7 @@
 
 ## 数据边界
 
-前台收信默认不把用户邮箱资料写进服务器全局文件。普通用户导入的 Outlook 密码、client_id、refresh_token、临时邮箱 JWT、分类、邮件缓存和本地删除记录，都优先保存在当前浏览器。
+前台收信默认不把用户邮箱资料写进服务器全局文件。普通用户导入的 Outlook 密码、client_id、refresh_token、临时邮箱 JWT、分类和本地删除记录，都优先保存在当前浏览器；完整邮件正文和 HTML 会按工作区写入服务端缓存，前端只分页读取当前结果。
 
 当用户使用服务端辅助能力时，数据按工作区保存：
 

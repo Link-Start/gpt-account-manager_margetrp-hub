@@ -25,7 +25,7 @@ example.com
 
 - Nginx 对外监听你的域名。
 - Python 服务只监听 `127.0.0.1:8765`。
-- 普通用户页面 `/` 默认把邮箱资料保存在当前浏览器。
+- 普通用户页面 `/` 默认把邮箱资料保存在当前浏览器；完整邮件正文和 HTML 按工作区缓存在 `data/workspaces/<workspace-id>/messages.json`。
 - 临时邮箱走 Cloudflare Temp Email Worker 兼容 API。
 - Microsoft 邮箱走独立的 Microsoft OAuth / Graph / IMAP 链路。
 - 管理员页 `/admin.html`、自检页 `/health.html` 都需要 `MAIL_PICKUP_ADMIN_TOKEN`。

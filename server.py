@@ -72,7 +72,7 @@ LOGIN_HISTORY_FILE = DATA_DIR / "login_history.json"
 LOGIN_DEBUG_DIR = DATA_DIR / "login_debug"
 UPGRADE_REQUEST_FILE = DATA_DIR / "upgrade_request.json"
 UPGRADE_RESULT_FILE = DATA_DIR / "upgrade_result.json"
-APP_VERSION = "20260601-proxy-env-clean"
+APP_VERSION = "20260601-server-mail-cache"
 
 DEFAULT_HOST = os.environ.get("MAIL_PICKUP_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("MAIL_PICKUP_PORT", "8765"))
@@ -535,6 +535,57 @@ def upsert_messages(incoming: list[dict[str, Any]], path: Path = MESSAGES_FILE) 
         message.setdefault("cached_at", now)
         cache[message_key(message)] = message
     save_messages(list(cache.values()), path)
+
+
+def cached_messages_response(path: Path, payload: dict[str, Any], *, limit: int = 80, offset: int = 0) -> dict[str, Any]:
+    try:
+        limit = max(1, min(int(limit or 80), 500))
+    except (TypeError, ValueError):
+        limit = 80
+    try:
+        offset = max(0, int(offset or 0))
+    except (TypeError, ValueError):
+        offset = 0
+    messages = filter_messages(load_messages(path), payload)
+    return {
+        "success": True,
+        "messages": messages[offset:offset + limit],
+        "count": len(messages),
+        "offset": offset,
+        "limit": limit,
+        "types": MAIL_TYPE_LABELS,
+    }
+
+
+def lightweight_mail_fetch_result(result: dict[str, Any]) -> dict[str, Any]:
+    clean = dict(result)
+    messages = clean.get("messages") if isinstance(clean.get("messages"), list) else []
+    codes: list[str] = []
+    has_verification_code = False
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        message_codes = [coerce_text(code) for code in message.get("codes", []) if coerce_text(code)]
+        codes.extend(message_codes)
+        if message_codes or coerce_text(message.get("mail_type")).lower() == "verification":
+            has_verification_code = True
+    clean["message_count"] = int(clean.get("message_count") or len(messages))
+    clean["codes"] = list(dict.fromkeys(codes))[:10]
+    clean["first_code"] = clean["codes"][0] if clean["codes"] else ""
+    clean["has_verification_code"] = has_verification_code
+    clean["messages"] = []
+    return clean
+
+
+def lightweight_fetch_result(result: dict[str, Any], *, cached_count: int = 0) -> dict[str, Any]:
+    clean = dict(result)
+    clean["results"] = [
+        lightweight_mail_fetch_result(item) if isinstance(item, dict) else item
+        for item in (clean.get("results") or [])
+    ]
+    clean["messages"] = []
+    clean["cached_messages"] = cached_count
+    return clean
 
 
 def parse_message_datetime(value: Any) -> datetime | None:
@@ -1811,6 +1862,7 @@ def filter_messages(messages: list[dict[str, Any]], payload: dict[str, Any]) -> 
     sender = str(payload.get("sender", "")).strip().lower()
     source = str(payload.get("source", "all")).strip().lower()
     mail_type = str(payload.get("mail_type", "all")).strip().lower()
+    category = str(payload.get("category", "all")).strip().lower()
     account = str(payload.get("account", "")).strip().lower()
     filtered = []
     for message in messages:
@@ -1824,6 +1876,8 @@ def filter_messages(messages: list[dict[str, Any]], payload: dict[str, Any]) -> 
         if source != "all" and source != str(message.get("source", "")).lower():
             continue
         if mail_type != "all" and mail_type != str(message.get("mail_type", "")).lower():
+            continue
+        if category != "all" and category != str(message.get("category", "")).lower():
             continue
         if account and account not in str(message.get("account", "")).lower():
             continue
@@ -1926,6 +1980,36 @@ def delete_cached_mail_message(message: dict[str, Any], path: Path = MESSAGES_FI
     }
 
 
+def delete_cached_mail_messages(payload: dict[str, Any], path: Path = MESSAGES_FILE) -> dict[str, Any]:
+    messages = load_messages(path)
+    raw_messages = payload.get("messages")
+    if isinstance(raw_messages, list) and raw_messages:
+        targets = [item for item in raw_messages if isinstance(item, dict)]
+    else:
+        filter_payload = payload.get("filter")
+        if not isinstance(filter_payload, dict):
+            raise RuntimeError("缺少要删除的邮件筛选条件")
+        targets = filter_messages(messages, filter_payload)
+    target_keys = {message_key(item) for item in targets}
+    if not target_keys:
+        return {
+            "success": True,
+            "deleted": 0,
+            "cache_removed": 0,
+            "message": "没有匹配到需要清理的缓存邮件",
+        }
+    kept = [item for item in messages if message_key(item) not in target_keys]
+    deleted = len(messages) - len(kept)
+    if deleted:
+        save_messages(kept, path)
+    return {
+        "success": True,
+        "deleted": deleted,
+        "cache_removed": deleted,
+        "message": "已从工具缓存批量清理，不会删除远端真实邮箱邮件",
+    }
+
+
 def delete_transient_client_mail_message(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "success": True,
@@ -1936,6 +2020,8 @@ def delete_transient_client_mail_message(payload: dict[str, Any]) -> dict[str, A
 
 
 def delete_stored_mail_message(payload: dict[str, Any], path: Path = MESSAGES_FILE) -> dict[str, Any]:
+    if isinstance(payload.get("messages"), list) or isinstance(payload.get("filter"), dict):
+        return delete_cached_mail_messages(payload, path)
     return delete_cached_mail_message(payload.get("message") or {}, path)
 
 
@@ -7795,16 +7881,20 @@ def trim_mail_fetch_jobs() -> None:
             MAIL_FETCH_JOBS.pop(coerce_text(job.get("job_id")), None)
 
 
-def run_client_mail_fetch_job(job_id: str, payload: dict[str, Any]) -> None:
+def run_client_mail_fetch_job(job_id: str, payload: dict[str, Any], workspace_id: str) -> None:
     try:
+        workspace = normalize_workspace_id(workspace_id)
         result = fetch_transient_client_mail(payload)
-        set_mail_fetch_job(job_id, status="success", result=result)
+        messages = result.get("messages", []) if isinstance(result.get("messages"), list) else []
+        upsert_messages(messages, workspace_file(workspace, "messages.json"))
+        set_mail_fetch_job(job_id, status="success", result=lightweight_fetch_result(result, cached_count=len(messages)))
     except Exception as exc:
         set_mail_fetch_job(job_id, status="failed", error=str(exc)[:500])
 
 
 def start_client_mail_fetch_job(payload: dict[str, Any], workspace_id: str = "public") -> dict[str, Any]:
-    hydrate_login_mail_credentials(payload, workspace_id)
+    workspace = normalize_workspace_id(workspace_id)
+    hydrate_login_mail_credentials(payload, workspace)
     accounts, account_errors = transient_mail_accounts(payload)
     temp_addresses, temp_errors = transient_temp_addresses(payload)
     total = len(accounts) + len(temp_addresses)
@@ -7815,7 +7905,7 @@ def start_client_mail_fetch_job(payload: dict[str, Any], workspace_id: str = "pu
     job = {
         "job_id": job_id,
         "status": "running",
-        "workspace_id": normalize_workspace_id(workspace_id),
+        "workspace_id": workspace,
         "created_at": now,
         "updated_at": now,
         "total": total,
@@ -7826,7 +7916,7 @@ def start_client_mail_fetch_job(payload: dict[str, Any], workspace_id: str = "pu
     with MAIL_FETCH_JOBS_LOCK:
         MAIL_FETCH_JOBS[job_id] = job
     trim_mail_fetch_jobs()
-    thread = threading.Thread(target=run_client_mail_fetch_job, args=(job_id, payload), daemon=True)
+    thread = threading.Thread(target=run_client_mail_fetch_job, args=(job_id, payload, workspace), daemon=True)
     thread.start()
     return {"success": True, "job": mail_fetch_job_public(job)}
 
@@ -8274,6 +8364,26 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_json({"success": False, "error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
             return
+        if parsed_client.path == "/client-api/messages":
+            try:
+                params = urllib.parse.parse_qs(parsed_client.query)
+                payload = {
+                    "query": params.get("query", [""])[0],
+                    "sender": params.get("sender", [""])[0],
+                    "source": params.get("source", ["all"])[0],
+                    "mail_type": params.get("mail_type", ["all"])[0],
+                    "category": params.get("category", ["all"])[0],
+                    "account": params.get("account", [""])[0],
+                }
+                self.send_json(cached_messages_response(
+                    workspace_file(self.workspace_id(), "messages.json"),
+                    payload,
+                    limit=params.get("limit", ["80"])[0],
+                    offset=params.get("offset", ["0"])[0],
+                ))
+            except Exception as exc:
+                self.send_json({"success": False, "error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
+            return
         if parsed_client.path == "/client-api/accounts":
             try:
                 accounts = load_accounts(workspace_file(self.workspace_id(), "accounts.json"))
@@ -8321,15 +8431,15 @@ class Handler(BaseHTTPRequestHandler):
                     "sender": params.get("sender", [""])[0],
                     "source": params.get("source", ["all"])[0],
                     "mail_type": params.get("mail_type", ["all"])[0],
+                    "category": params.get("category", ["all"])[0],
                     "account": params.get("account", [""])[0],
                 }
-                limit = max(1, min(int(params.get("limit", ["80"])[0] or 80), 500))
-                messages = filter_messages(load_messages(), payload)[:limit]
-                self.send_json({
-                    "messages": messages,
-                    "count": len(messages),
-                    "types": MAIL_TYPE_LABELS,
-                })
+                self.send_json(cached_messages_response(
+                    MESSAGES_FILE,
+                    payload,
+                    limit=params.get("limit", ["80"])[0],
+                    offset=params.get("offset", ["0"])[0],
+                ))
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
             return
@@ -8366,8 +8476,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/client-api/fetch":
             try:
                 payload = self.read_json()
-                hydrate_login_mail_credentials(payload, self.workspace_id())
-                self.send_json(fetch_transient_client_mail(payload))
+                workspace = self.workspace_id()
+                hydrate_login_mail_credentials(payload, workspace)
+                result = fetch_transient_client_mail(payload)
+                messages = result.get("messages", []) if isinstance(result.get("messages"), list) else []
+                upsert_messages(messages, workspace_file(workspace, "messages.json"))
+                self.send_json(lightweight_fetch_result(result, cached_count=len(messages)))
             except Exception as exc:
                 self.send_json({"error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -8379,7 +8493,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/client-api/messages/delete":
             try:
-                self.send_json(delete_transient_client_mail_message(self.read_json()))
+                self.send_json(delete_stored_mail_message(
+                    self.read_json(),
+                    workspace_file(self.workspace_id(), "messages.json"),
+                ))
             except Exception as exc:
                 self.send_json({"success": False, "error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -8659,18 +8776,18 @@ class Handler(BaseHTTPRequestHandler):
             messages = [message for result in results for message in result.get("messages", [])]
             failed_results = [result for result in results if not result.get("ok")]
             upsert_messages(messages)
+            upsert_messages(messages, workspace_file(self.workspace_id(), "messages.json"))
             save_accounts(accounts)
             save_temp_addresses(temp_addresses)
-            self.send_json({
+            self.send_json(lightweight_fetch_result({
                 "results": results,
-                "messages": messages,
                 "summary": {
                     "total": len(results),
                     "ok": len(results) - len(failed_results),
                     "failed": len(failed_results),
                     "messages": len(messages),
                 },
-            })
+            }, cached_count=len(messages)))
             return
         if self.path == "/api/messages/delete":
             try:

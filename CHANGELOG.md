@@ -1,5 +1,13 @@
 # 更新记录
 
+## 2026-06-01 server-mail-cache
+
+- 邮件正文和 HTML 改为写入服务端工作区缓存 `data/workspaces/<workspace>/messages.json`，浏览器不再保存完整邮件数组。
+- 首页邮件列表改成从 `/client-api/messages` 分页读取，筛选、分页、单封删除、批量删除都直接操作服务端缓存。
+- 收信接口只返回轻量结果：邮件数量、验证码列表和首个验证码，避免大批邮件触发浏览器 `localStorage` 配额错误。
+- CPA 仓管页“收取验证码”不再写 `ctgptm.mail.messages`，只使用轻量验证码摘要。
+- 刷新页邮箱验证改为使用 `codes / first_code / has_verification_code / message_count`，不再依赖完整邮件正文返回。
+
 ## 2026-06-01 fetch-background
 
 - 邮箱读取改为后台任务：前端只启动任务并轮询状态，后端继续直接连接 Outlook / 临时邮箱 API 收信，避免网页长请求被 Nginx/Cloudflare 504 截断。
