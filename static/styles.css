@@ -1289,6 +1289,17 @@ button:disabled {
   font-size: 11px;
 }
 
+.refresh-console .login-stats .plan-type-stat {
+  min-width: 280px;
+  flex: 1 1 280px;
+}
+
+.refresh-console .login-stats .plan-type-stat strong {
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .refresh-console .login-table-wrap {
   flex: 0 1 auto;
   min-height: 0;
@@ -2028,7 +2039,7 @@ button:disabled {
   justify-content: flex-end;
   flex: 1 1 auto;
   min-width: 0;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
 }
 
@@ -2041,7 +2052,7 @@ button:disabled {
 .mail-list {
   display: grid;
   align-content: start;
-  gap: 5px;
+  gap: 6px;
   flex: 1 1 auto;
   min-height: 0;
   max-height: none;
@@ -2059,11 +2070,12 @@ button:disabled {
 
 .mail-item {
   display: grid;
-  gap: 2px;
+  grid-template-rows: auto auto auto;
+  gap: 3px;
   text-align: left;
   width: 100%;
-  min-height: 0;
-  padding: 5px 7px 6px;
+  min-height: 58px;
+  padding: 7px 8px;
   border: 1px solid rgba(209, 224, 244, 0.78);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.72);
@@ -2103,6 +2115,7 @@ button:disabled {
   gap: 6px;
   align-items: center;
   min-height: 18px;
+  min-width: 0;
 }
 
 .mail-item-actions {
@@ -2110,6 +2123,8 @@ button:disabled {
   align-items: center;
   gap: 4px;
   flex: 0 0 auto;
+  max-width: 42%;
+  min-width: 0;
 }
 
 .mail-delete-one {
@@ -2142,9 +2157,10 @@ button:disabled {
 
 .mail-item-top strong {
   min-width: 0;
+  flex: 1 1 auto;
   color: #25314b;
   font-size: 12px;
-  line-height: 1.22;
+  line-height: 1.25;
 }
 
 .mail-item-account {
@@ -2155,7 +2171,7 @@ button:disabled {
   background: rgba(47, 117, 255, 0.09);
   color: #315982;
   font-size: 10px;
-  line-height: 1.35;
+  line-height: 1.45;
   font-weight: 900;
 }
 
@@ -2166,16 +2182,19 @@ button:disabled {
   background: #e1efff;
   color: var(--accent);
   font-size: 10px;
-  line-height: 1.35;
+  line-height: 1.45;
   font-style: normal;
   font-weight: 850;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mail-item-meta,
 .mail-item-preview {
   color: var(--muted);
   font-size: 10px;
-  line-height: 1.25;
+  line-height: 1.35;
 }
 
 .mail-item-preview {
@@ -2868,6 +2887,22 @@ body.modal-open {
   color: var(--accent-strong);
   background: rgba(255, 255, 255, 0.88);
   border-color: rgba(47, 117, 255, 0.32);
+}
+
+.mailbox-side-link.danger {
+  color: #8a4251;
+}
+
+.mailbox-side-link.danger strong {
+  background: rgba(212, 61, 81, 0.1);
+  color: var(--danger);
+}
+
+.mailbox-side-link.danger:hover:not(:disabled),
+.mailbox-side-link.danger.active {
+  color: var(--danger);
+  border-color: rgba(212, 61, 81, 0.32);
+  background: rgba(255, 246, 248, 0.92);
 }
 
 .mailbox-side-link strong {

@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GPT账号管理助手</title>
-  <link rel="stylesheet" href="/styles.css?v=20260601-ui-tighten">
+  <link rel="stylesheet" href="/styles.css?v=20260601-mailbox-plan-stats">
   <link rel="stylesheet" href="/forge-theme.css?v=20260531-open-source-links">
   <script src="/nav-links.js?v=20260531-docker-dns-links" defer></script>
-  <script src="/i18n.js?v=20260601-ui-tighten" defer></script>
+  <script src="/i18n.js?v=20260601-mailbox-plan-stats" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -171,6 +171,7 @@
             <span>刷新中 <strong id="loginRunning">0</strong></span>
             <span>成功 <strong id="loginSuccess">0</strong></span>
             <span>失败 <strong id="loginFailed">0</strong></span>
+            <span class="plan-type-stat">类型 <strong id="loginPlanTypes">FREE 0 / PLUS 0 / TEAM 0 / PROX5 0 / PROX20 0</strong></span>
           </div>
           <div class="login-table-wrap">
             <table class="login-table">
@@ -298,7 +299,7 @@
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="/client.js?v=20260601-ui-tighten" defer></script>
+  <script src="/client.js?v=20260601-mailbox-plan-stats" defer></script>
 </body>
 </html>
 

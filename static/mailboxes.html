@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GPT账号管理助手 - 邮箱管理</title>
-  <link rel="stylesheet" href="/styles.css?v=20260601-server-mail-cache">
+  <link rel="stylesheet" href="/styles.css?v=20260601-mailbox-plan-stats">
   <link rel="stylesheet" href="/forge-theme.css?v=20260531-open-source-links">
   <script src="/nav-links.js?v=20260531-docker-dns-links" defer></script>
-  <script src="/i18n.js?v=20260601-server-mail-cache" defer></script>
+  <script src="/i18n.js?v=20260601-mailbox-plan-stats" defer></script>
 </head>
 <body>
   <div class="shell mailbox-manager-shell">
@@ -78,6 +78,14 @@
         <button class="mailbox-side-link" type="button" data-manager-filter="temp">
           <span>临时邮箱</span>
           <strong id="sideTemp">0</strong>
+        </button>
+        <button class="mailbox-side-link danger" type="button" data-manager-filter="error">
+          <span>错误邮箱</span>
+          <strong id="sideError">0</strong>
+        </button>
+        <button class="mailbox-side-link danger" type="button" data-manager-filter="banned">
+          <span>已封禁邮箱</span>
+          <strong id="sideBanned">0</strong>
         </button>
         <div class="mailbox-side-note">
           <span>工作空间</span>
@@ -212,7 +220,7 @@
     </section>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="/mailboxes.js?v=20260601-server-mail-cache" defer></script>
+  <script src="/mailboxes.js?v=20260601-mailbox-plan-stats" defer></script>
 </body>
 </html>
 

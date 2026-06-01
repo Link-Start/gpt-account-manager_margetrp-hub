@@ -137,6 +137,7 @@ const els = {
   loginRunning: document.querySelector("#loginRunning"),
   loginSuccess: document.querySelector("#loginSuccess"),
   loginFailed: document.querySelector("#loginFailed"),
+  loginPlanTypes: document.querySelector("#loginPlanTypes"),
   clientLogPanel: document.querySelector("#clientLogPanel"),
   clientLogList: document.querySelector("#clientLogList"),
   clearClientLogsBtn: document.querySelector("#clearClientLogsBtn"),
@@ -2071,18 +2072,46 @@ function exportCredentialJson(format) {
   toast(`已导出 ${rows.length} 个 sub2api 账号`);
 }
 
+function normalizePlanBucket(value) {
+  const text = String(value || "").trim().toUpperCase().replace(/[\s_-]+/g, "");
+  if (!text) return "";
+  if (text.includes("PROX20") || text.includes("PRO20") || text.includes("X20")) return "PROX20";
+  if (text.includes("PROX5") || text.includes("PRO5") || text.includes("X5")) return "PROX5";
+  if (text.includes("TEAM") || text.includes("BUSINESS") || text.includes("ENTERPRISE")) return "TEAM";
+  if (text.includes("PLUS")) return "PLUS";
+  if (text.includes("FREE")) return "FREE";
+  return "";
+}
+
+function rowPlanBucket(row) {
+  const authFile = rowAuthFile(row);
+  return normalizePlanBucket(
+    row.plan_type
+    || row.chatgpt_plan_type
+    || authFile?.plan_type
+    || authFile?.chatgpt_plan_type
+    || ""
+  );
+}
+
 function renderLoginTable() {
   const rows = state.abnormalRows;
   const counts = { idle: 0, queued: 0, running: 0, success: 0, failed: 0 };
+  const planCounts = { FREE: 0, PLUS: 0, TEAM: 0, PROX5: 0, PROX20: 0 };
   rows.forEach((row) => {
     const status = rowStateFor(row).status || "idle";
     counts[status] = (counts[status] || 0) + 1;
+    const plan = rowPlanBucket(row);
+    if (planCounts[plan] !== undefined) planCounts[plan] += 1;
   });
   els.loginTotal.textContent = String(rows.length);
   els.loginIdle.textContent = String(counts.idle || 0);
   els.loginRunning.textContent = String((counts.queued || 0) + (counts.running || 0));
   els.loginSuccess.textContent = String(counts.success || 0);
   els.loginFailed.textContent = String(counts.failed || 0);
+  if (els.loginPlanTypes) {
+    els.loginPlanTypes.textContent = `FREE ${planCounts.FREE} / PLUS ${planCounts.PLUS} / TEAM ${planCounts.TEAM} / PROX5 ${planCounts.PROX5} / PROX20 ${planCounts.PROX20}`;
+  }
   if (!rows.length) {
     els.loginTableBody.innerHTML = '<tr><td colspan="6" class="empty-cell">先扫描 CPA 异常，或加入左侧选中的邮箱。</td></tr>';
     return;

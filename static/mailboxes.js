@@ -15,6 +15,8 @@ const els = {
   sideTotal: document.querySelector("#sideTotal"),
   sideMicrosoft: document.querySelector("#sideMicrosoft"),
   sideTemp: document.querySelector("#sideTemp"),
+  sideError: document.querySelector("#sideError"),
+  sideBanned: document.querySelector("#sideBanned"),
   statTotal: document.querySelector("#statTotal"),
   statMicrosoft: document.querySelector("#statMicrosoft"),
   statTemp: document.querySelector("#statTemp"),
@@ -279,6 +281,17 @@ function accountHasError(account) {
   return ["error", "failed"].includes(status) || Boolean(account.last_error || account.last_error_code || account.last_error_label);
 }
 
+function accountIsBanned(account) {
+  const text = [
+    account.last_status,
+    account.last_error,
+    account.last_error_code,
+    account.last_error_label,
+    account.last_error_hint,
+  ].join(" ").toLowerCase();
+  return /banned|deactivated|disabled|suspended|封禁|停用|禁用|已停用/.test(text);
+}
+
 function secretPreview(value, empty = "未填写") {
   const text = String(value || "");
   if (!text) return `<span class="mailbox-secret missing">${empty}</span>`;
@@ -477,11 +490,14 @@ function selectedRows() {
 
 function filteredAccounts() {
   const query = els.searchInput.value.trim().toLowerCase();
-  const source = els.sourceFilter.value === "all" ? state.sourceView : els.sourceFilter.value;
+  const selectedSource = els.sourceFilter.value || "all";
+  const source = selectedSource === "all" ? state.sourceView : selectedSource;
   const group = els.groupFilter.value;
   return state.accounts.filter((account) => {
     if (source === "microsoft" && account.source !== "microsoft") return false;
     if (source === "temp" && account.source !== "temp") return false;
+    if (source === "error" && !accountHasError(account)) return false;
+    if (source === "banned" && !accountIsBanned(account)) return false;
     if (group !== "all" && (account.category || "") !== group) return false;
     if (!query) return true;
     const haystack = [account.email, account.category, accountKindLabel(account), account.source].join(" ").toLowerCase();
@@ -505,9 +521,13 @@ function renderStats(rows) {
   const total = state.accounts.length;
   const microsoft = state.accounts.filter((account) => account.source === "microsoft").length;
   const temp = state.accounts.filter((account) => account.source === "temp").length;
+  const error = state.accounts.filter(accountHasError).length;
+  const banned = state.accounts.filter(accountIsBanned).length;
   els.sideTotal.textContent = total;
   els.sideMicrosoft.textContent = microsoft;
   els.sideTemp.textContent = temp;
+  if (els.sideError) els.sideError.textContent = error;
+  if (els.sideBanned) els.sideBanned.textContent = banned;
   els.statTotal.textContent = total;
   els.statMicrosoft.textContent = microsoft;
   els.statTemp.textContent = temp;
@@ -819,7 +839,7 @@ els.importModal.addEventListener("click", (event) => {
 els.sideFilters.forEach((button) => {
   button.addEventListener("click", () => {
     state.sourceView = button.dataset.managerFilter || "all";
-    els.sourceFilter.value = state.sourceView;
+    els.sourceFilter.value = ["all", "microsoft", "temp"].includes(state.sourceView) ? state.sourceView : "all";
     state.page = 1;
     renderAll();
   });
