@@ -72,7 +72,7 @@ LOGIN_HISTORY_FILE = DATA_DIR / "login_history.json"
 LOGIN_DEBUG_DIR = DATA_DIR / "login_debug"
 UPGRADE_REQUEST_FILE = DATA_DIR / "upgrade_request.json"
 UPGRADE_RESULT_FILE = DATA_DIR / "upgrade_result.json"
-APP_VERSION = "20260601-fetch-provider-fallback"
+APP_VERSION = "20260601-mail-dns-normal"
 
 DEFAULT_HOST = os.environ.get("MAIL_PICKUP_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("MAIL_PICKUP_PORT", "8765"))
@@ -104,11 +104,7 @@ MICROSOFT_DNS_FALLBACK_HOSTS = {
     "outlook.office365.com",
     "login.live.com",
 }
-MICROSOFT_STATIC_FALLBACK_IPS = {
-    "login.microsoftonline.com": ["20.190.151.131", "20.190.151.132", "20.190.151.133", "20.190.151.134"],
-    "graph.microsoft.com": ["20.190.132.105", "20.190.132.106", "20.190.132.40", "20.190.132.42"],
-    "login.live.com": ["20.190.151.131", "20.190.151.132", "20.190.151.67", "20.190.151.68"],
-}
+MICROSOFT_STATIC_FALLBACK_IPS: dict[str, list[str]] = {}
 STATIC_DNS_FALLBACK_IPS = {
     **({TEMP_WORKER_DNS_FALLBACK_HOST: TEMP_WORKER_DNS_FALLBACK_IPS} if TEMP_WORKER_DNS_FALLBACK_HOST and TEMP_WORKER_DNS_FALLBACK_IPS else {}),
     **OPENAI_STATIC_FALLBACK_IPS,
@@ -1146,8 +1142,16 @@ def temporary_dns_overrides(overrides: dict[str, list[str]]):
 def open_with_fast_dns(open_call: Any, req: urllib.request.Request, *, timeout: int = 30, use_cache: bool = True):
     if not use_cache:
         return open_call(req, timeout=timeout)
-    with temporary_dns_overrides(dns_overrides_for_url(req.full_url)):
+    try:
         return open_call(req, timeout=timeout)
+    except urllib.error.URLError as exc:
+        if not is_dns_error(exc):
+            raise
+        overrides = dns_overrides_for_url(req.full_url)
+        if not overrides:
+            raise
+        with temporary_dns_overrides(overrides):
+            return open_call(req, timeout=timeout)
 
 
 def urlopen_with_dns_retry(req: urllib.request.Request, *, timeout: int = 30, retries: int = 1):
