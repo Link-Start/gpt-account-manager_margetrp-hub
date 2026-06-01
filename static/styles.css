@@ -246,6 +246,15 @@ a {
   color: #7a8ba6;
 }
 
+.language-switch span {
+  opacity: 0.62;
+}
+
+.language-switch span.is-active {
+  color: var(--accent-strong);
+  opacity: 1;
+}
+
 .module-tabs {
   margin-top: 8px;
   padding: 4px;

@@ -382,6 +382,13 @@
         font-style: normal;
         color: #7a8ba6;
       }
+      .language-switch span {
+        opacity: 0.62;
+      }
+      .language-switch span.is-active {
+        color: #0b62d8;
+        opacity: 1;
+      }
       .login-language-switch {
         position: fixed;
         top: 18px;
@@ -412,9 +419,10 @@
       });
     }
     const lang = getLanguage();
-    button.innerHTML = lang === TARGET_LANG ? "<span>中文</span><i>CN</i>" : "<span>English</span><i>EN</i>";
-    button.setAttribute("aria-label", lang === TARGET_LANG ? "切换到中文" : "Switch to English");
-    button.title = lang === TARGET_LANG ? "切换到中文" : "Switch to English";
+    const isEnglish = lang === TARGET_LANG;
+    button.innerHTML = `<span class="${isEnglish ? "" : "is-active"}">中文</span><i>/</i><span class="${isEnglish ? "is-active" : ""}">EN</span>`;
+    button.setAttribute("aria-label", "切换界面语言 / Switch language");
+    button.title = "切换界面语言 / Switch language";
   }
 
   let applying = false;
