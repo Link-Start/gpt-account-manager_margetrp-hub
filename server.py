@@ -72,7 +72,7 @@ LOGIN_HISTORY_FILE = DATA_DIR / "login_history.json"
 LOGIN_DEBUG_DIR = DATA_DIR / "login_debug"
 UPGRADE_REQUEST_FILE = DATA_DIR / "upgrade_request.json"
 UPGRADE_RESULT_FILE = DATA_DIR / "upgrade_result.json"
-APP_VERSION = "20260601-mail-dns-normal"
+APP_VERSION = "20260601-proxy-env-clean"
 
 DEFAULT_HOST = os.environ.get("MAIL_PICKUP_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("MAIL_PICKUP_PORT", "8765"))
@@ -114,6 +114,17 @@ DNS_FALLBACK_HOSTS = set(STATIC_DNS_FALLBACK_IPS) | MICROSOFT_DNS_FALLBACK_HOSTS
 DNS_FALLBACK_CACHE: dict[str, list[str]] = {}
 DNS_OVERRIDE_LOCK = threading.RLock()
 LEGACY_TEMP_WORKER_URLS: set[str] = set()
+
+
+def sanitize_process_proxy_env() -> None:
+    disabled_values = {"", "none", "direct", "off", "false", "0", "no_proxy", "noproxy"}
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        value = os.environ.get(key)
+        if value is not None and value.strip().lower() in disabled_values:
+            os.environ.pop(key, None)
+
+
+sanitize_process_proxy_env()
 
 
 def normalize_temp_worker_url(value: str) -> str:
