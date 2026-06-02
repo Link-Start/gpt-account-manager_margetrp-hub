@@ -1247,6 +1247,7 @@
         const SETTINGS_KEY = "ctgptm-cpa-warehouse-settings";
         const MAIL_ACCOUNTS_KEY = "ctgptm.mail.accounts";
         const MAIL_TEMP_SETTINGS_KEY = "ctgptm.mail.tempSettings";
+        const REFRESH_SETTINGS_KEY = "ctgptm.mail.refreshSettings";
         const WORKSPACE_KEY = "ctgptm.workspaceId";
         const REFRESH_QUEUE_KEY = "ctgptm.mail.refreshQueue";
         const state = {
@@ -2011,7 +2012,90 @@
         }
 
         function tempSettings() {
-          return loadJson(MAIL_TEMP_SETTINGS_KEY, {});
+          const mailbox = loadJson(MAIL_TEMP_SETTINGS_KEY, {});
+          const refresh = loadJson(REFRESH_SETTINGS_KEY, {});
+          return {
+            base_url: mailbox.base_url || refresh.temp_sync_api || "",
+            site_password: mailbox.site_password || refresh.temp_sync_site_password || "",
+            admin_password: mailbox.admin_password || mailbox.admin_key || refresh.temp_sync_admin_key || "",
+          };
+        }
+
+        async function syncTempJwtFromConfiguredWorker(email) {
+          const settings = tempSettings();
+          if (!settings.base_url || !settings.admin_password || !email) return [];
+          const response = await fetch("/client-api/temp-addresses/sync-jwts", {
+            method: "POST",
+            headers: apiHeaders(),
+            body: JSON.stringify({
+              base_url: settings.base_url,
+              admin_password: settings.admin_password,
+              site_password: settings.site_password || "",
+              email_list: [email],
+            }),
+          });
+          const data = await readJsonResponse(response, "同步临时邮箱后台");
+          if (!response.ok || data.success === false) {
+            throw new Error(data.error || "同步临时邮箱后台失败");
+          }
+          const results = Array.isArray(data.results) ? data.results : [];
+          const ok = results.filter((item) => item?.ok && item?.jwt);
+          if (!ok.length) return [];
+          const imported = ok.map((item) => ({
+            id: `temp:${String(item.address || item.email || email).toLowerCase()}`,
+            source: "temp",
+            email: item.address || item.email || email,
+            jwt: item.jwt,
+            base_url: settings.base_url,
+            site_password: settings.site_password || "",
+            category: "临时邮箱",
+          }));
+          const byEmail = new Map(state.workspaceTempAddresses.map((item) => [String(item.email || "").toLowerCase(), item]));
+          imported.forEach((item) => byEmail.set(String(item.email || "").toLowerCase(), item));
+          state.workspaceTempAddresses = [...byEmail.values()];
+          if (state.rows.length) renderRows(state.rows);
+          return imported;
+        }
+
+        async function syncMissingTempJwtsForRows(rows) {
+          const candidates = [...new Set((rows || [])
+            .map((row) => firstNonEmpty(row.email, row.account))
+            .map((email) => String(email || "").trim().toLowerCase())
+            .filter((email) => email && email.includes("@") && !findLocalAccounts(email).length))];
+          if (!candidates.length) return 0;
+          const settings = tempSettings();
+          if (!settings.base_url || !settings.admin_password) return 0;
+          const response = await fetch("/client-api/temp-addresses/sync-jwts", {
+            method: "POST",
+            headers: apiHeaders(),
+            body: JSON.stringify({
+              base_url: settings.base_url,
+              admin_password: settings.admin_password,
+              site_password: settings.site_password || "",
+              email_list: candidates,
+            }),
+          });
+          const data = await readJsonResponse(response, "同步临时邮箱后台");
+          if (!response.ok || data.success === false) {
+            throw new Error(data.error || "同步临时邮箱后台失败");
+          }
+          const ok = (Array.isArray(data.results) ? data.results : []).filter((item) => item?.ok && item?.jwt);
+          const byEmail = new Map(state.workspaceTempAddresses.map((item) => [String(item.email || "").toLowerCase(), item]));
+          ok.forEach((item) => {
+            const email = String(item.address || item.email || "").toLowerCase();
+            if (!email) return;
+            byEmail.set(email, {
+              id: `temp:${email}`,
+              source: "temp",
+              email,
+              jwt: item.jwt,
+              base_url: settings.base_url,
+              site_password: settings.site_password || "",
+              category: "临时邮箱",
+            });
+          });
+          state.workspaceTempAddresses = [...byEmail.values()];
+          return ok.length;
         }
 
         function parseManual401Rows(text) {
@@ -2073,9 +2157,18 @@
             setStatus(elements.repairMailStatus, "当前 401 凭证没有邮箱，无法自动收验证码。", "error");
             return;
           }
-          const accounts = findLocalAccounts(email);
+          let accounts = findLocalAccounts(email);
           if (!accounts.length) {
             setStatus(elements.repairMailStatus, "本地没有取件凭证，先尝试用临时邮箱后台读取。");
+            try {
+              const imported = await syncTempJwtFromConfiguredWorker(email);
+              if (imported.length) {
+                accounts = findLocalAccounts(email);
+                addJobLog(`已从临时邮箱后台同步取件 JWT：${email}`, "success");
+              }
+            } catch (error) {
+              addJobLog(error instanceof Error ? error.message : "临时邮箱后台同步失败", "warning");
+            }
           }
           setButtonBusy(elements.fetchRepairMail, true, "收取中...");
           try {
@@ -2424,7 +2517,14 @@
             if (!response.ok || !data.success) {
               throw new Error(data.error || "CPA 请求失败");
             }
-            renderRows((isRepair || isDelete) ? data.results : data.candidates);
+            const nextRows = (isRepair || isDelete) ? data.results : data.candidates;
+            try {
+              const synced = await syncMissingTempJwtsForRows(nextRows);
+              if (synced) addLog(`已从临时邮箱后台补齐取件资料：${synced} 个`, "success");
+            } catch (error) {
+              addLog(error instanceof Error ? error.message : "临时邮箱后台同步失败", "warning");
+            }
+            renderRows(nextRows);
             updateStats(data.summary || {
               total: data.total,
               candidates: (data.candidates || []).length,
