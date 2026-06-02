@@ -1,5 +1,11 @@
 # 更新记录
 
+## 2026-06-03 generic-mail-provider
+
+- 新增普通邮箱取信入口，支持 IMAP/POP3 自动推断以及 CloudMail/LuckMail/Inbucket 类 API 取信。
+- 邮箱管理页支持普通邮箱导入、同步、筛选、导出和删除。
+- 凭证刷新页的邮箱预检和登录取码链路支持普通邮箱，并补充对应中文错误分类。
+
 ## 2026-06-01 server-mail-cache
 
 - 邮件正文和 HTML 改为写入服务端工作区缓存 `data/workspaces/<workspace>/messages.json`，浏览器不再保存完整邮件数组。

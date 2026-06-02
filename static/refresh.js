@@ -328,6 +328,11 @@ const ERROR_MANUAL = {
   imap_token_failed: "IMAP 授权失败",
   graph_fetch_failed: "Graph 收信失败",
   imap_fetch_failed: "IMAP 收信失败",
+  generic_config_missing: "普通邮箱配置缺失",
+  generic_auth_failed: "普通邮箱认证失败",
+  generic_imap_failed: "普通邮箱 IMAP 失败",
+  generic_pop3_failed: "普通邮箱 POP3 失败",
+  generic_api_failed: "普通邮箱 API 失败",
   temp_invalid_credential: "临时邮箱 JWT 无效",
   temp_forbidden: "临时邮箱拒绝访问",
   network_tls_eof: "网络 TLS 中断",
@@ -342,6 +347,7 @@ const ERROR_MANUAL = {
   verification_code_invalid: "验证码无效",
   phone_verification_required: "需要手机验证",
   phone_2fa_failed: "二次验证失败",
+  manual_email_code_failed: "邮箱验证码保存失败",
   manual_phone_code_failed: "手机验证码保存失败",
   account_banned: "账号被封禁",
   account_not_found: "账号不存在",
@@ -619,14 +625,54 @@ function isRealSecret(value) {
   return Boolean(text) && !isMaskedSecret(text);
 }
 
+function normalizeGenericMode(value) {
+  const text = String(value || "auto").trim().toLowerCase().replace("_", "-");
+  const aliases = {
+    pop: "pop3",
+    "mail-pop": "pop3",
+    "mail-pop3": "pop3",
+    "mail-imap": "imap",
+    "cloud-mail": "cloudmail",
+    skymail: "cloudmail",
+    "luck-mail": "luckmail",
+    "luckmail-api": "luckmail",
+    luckyous: "luckmail",
+  };
+  const normalized = aliases[text] || text;
+  return ["auto", "imap", "pop3", "cloudmail", "luckmail", "inbucket"].includes(normalized) ? normalized : "auto";
+}
+
+function genericAccountPayload(account) {
+  return {
+    email: account.email,
+    password: account.password || account.token || "",
+    username: account.username || "",
+    mode: normalizeGenericMode(account.mode || account.provider),
+    imap_host: account.imap_host || account.imapHost || account.base_url || account.baseUrl || "",
+    imap_port: Number(account.imap_port || account.imapPort || 993),
+    pop3_host: account.pop3_host || account.pop3Host || "",
+    pop3_port: Number(account.pop3_port || account.pop3Port || 995),
+    category: account.category || account.label || "",
+  };
+}
+
+function sourceBadgeTone(value) {
+  return value === "microsoft" ? "ms" : value === "generic" ? "generic" : "temp";
+}
+
 function hasLocalPickupSecrets(payload) {
   return (payload.accounts || []).some((item) => isRealSecret(item.client_id) && isRealSecret(item.refresh_token))
-    || (payload.temp_addresses || []).some((item) => isRealSecret(item.jwt));
+    || (payload.temp_addresses || []).some((item) => isRealSecret(item.jwt))
+    || (payload.generic_accounts || []).some((item) => isRealSecret(item.password || item.token));
 }
 
 function pickupSourceForPayload(payload) {
-  if ((payload.temp_addresses || []).length && !(payload.accounts || []).length) return "temp";
-  if ((payload.accounts || []).length && !(payload.temp_addresses || []).length) return "microsoft";
+  const hasMicrosoft = (payload.accounts || []).length > 0;
+  const hasTemp = (payload.temp_addresses || []).length > 0;
+  const hasGeneric = (payload.generic_accounts || []).length > 0;
+  if (hasTemp && !hasMicrosoft && !hasGeneric) return "temp";
+  if (hasMicrosoft && !hasTemp && !hasGeneric) return "microsoft";
+  if (hasGeneric && !hasMicrosoft && !hasTemp) return "generic";
   return "all";
 }
 
@@ -828,12 +874,14 @@ function savePhonePool() {
 
 function sourceLabel(account) {
   if (account.source === "microsoft") return account.service || "Outlook";
+  if (account.source === "generic") return account.service || "普通邮箱";
   return "临时邮箱";
 }
 
 function sourceTone(account) {
+  if (account.source === "generic") return "generic";
   if (account.service === "Cloud Mail") return "cloud";
-  return account.source === "microsoft" ? "ms" : "temp";
+  return sourceBadgeTone(account.source);
 }
 
 function sourceRefreshState(account) {
@@ -977,6 +1025,18 @@ function accountMailFailed(account) {
 }
 
 function accountFetchPayload(account) {
+  if (account.source === "generic") {
+    return {
+      source: "generic",
+      provider: normalizeGenericMode(account.mode || account.provider),
+      limit: 12,
+      email: account.email,
+      emails: [account.email],
+      accounts: [],
+      temp_addresses: [],
+      generic_accounts: [genericAccountPayload(account)],
+    };
+  }
   if (account.source === "temp") {
     return {
       source: "temp",
@@ -991,6 +1051,7 @@ function accountFetchPayload(account) {
         site_password: account.site_password,
       }],
       accounts: [],
+      generic_accounts: [],
     };
   }
   return {
@@ -1006,6 +1067,7 @@ function accountFetchPayload(account) {
       refresh_token: account.refresh_token,
     }],
     temp_addresses: [],
+    generic_accounts: [],
   };
 }
 
@@ -1310,6 +1372,7 @@ function renderQueue() {
         || isPhoneVerificationError(job.error_code || row.error_code, statusText)
         || /验证码|接码|waiting_code|manual/i.test(statusText)
       );
+    const sourceToneValue = sourceBadgeTone(row.source);
     return `
       <tr data-id="${escapeHtml(row.id)}">
         <td><input class="abnormal-check queue-check" type="checkbox" ${state.selectedQueue.has(row.id) ? "checked" : ""}></td>
@@ -1317,7 +1380,7 @@ function renderQueue() {
           <strong>${escapeHtml(row.email || row.name || "-")}</strong>
           <em>${escapeHtml(row.service || "本地邮箱")}${phoneEntry ? ` · 手机 ${escapeHtml(phoneEntry.phone)}` : ""}</em>
         </td>
-        <td><span class="source-badge ${escapeHtml(row.source === "microsoft" ? "ms" : "temp")}">${escapeHtml(row.service || "本地邮箱")}</span></td>
+        <td><span class="source-badge ${escapeHtml(sourceToneValue)}">${escapeHtml(row.service || "本地邮箱")}</span></td>
         <td><span class="login-status ${escapeHtml(status)}">${escapeHtml(loginLabel(status))}</span></td>
         <td><div class="login-error" title="${escapeHtml(errorText)}">${escapeHtml(errorText)}</div></td>
         <td>
@@ -1914,8 +1977,11 @@ function credentialSourceForRow(row, payload) {
     || (payload.accounts || []).some((item) => accountEmailKey(item.email) === accountEmailKey(email));
   const hasTemp = matches.some((item) => item.source === "temp")
     || (payload.temp_addresses || []).some((item) => accountEmailKey(item.email) === accountEmailKey(email));
+  const hasGeneric = matches.some((item) => item.source === "generic")
+    || (payload.generic_accounts || []).some((item) => accountEmailKey(item.email) === accountEmailKey(email));
   if (hasMicrosoft) return "microsoft";
   if (hasTemp) return "temp";
+  if (hasGeneric) return "generic";
   return "";
 }
 
@@ -1929,7 +1995,7 @@ function missingCredentialDetails(row) {
     error_code: "mail_credentials_missing",
     error_hint: isTempLike
       ? "先在本页同步队列 JWT，或到账号管理页导入 邮箱----JWT"
-      : "先到账号管理页导入 Outlook 四段凭证，再重新执行",
+      : "先到账号管理页导入 Outlook 四段凭证，或导入普通邮箱授权码 / IMAP / POP3 / API 取信配置，再重新执行",
   };
 }
 
@@ -2002,6 +2068,9 @@ function loginPayload(row) {
         base_url: item.base_url,
         site_password: item.site_password,
       })),
+    generic_accounts: sameEmail
+      .filter((item) => item.source === "generic")
+      .map(genericAccountPayload),
   };
 }
 
@@ -2221,6 +2290,7 @@ async function preflightMailPickup(row, payload) {
       emails: [payload.email],
       accounts: payload.accounts || [],
       temp_addresses: payload.temp_addresses || [],
+      generic_accounts: payload.generic_accounts || [],
     }),
   });
   let data;
@@ -2631,16 +2701,29 @@ function renderAll() {
 function normalizeServerAccount(item, source) {
   const email = String(item?.email || "").trim();
   if (!email) return null;
+  const normalizedSource = source === "generic" ? "generic" : source === "temp" ? "temp" : "microsoft";
   const base = {
-    id: String(source === "temp" ? `temp:${email.toLowerCase()}` : `microsoft:${email.toLowerCase()}`),
+    id: `${normalizedSource}:${email.toLowerCase()}`,
     email,
     name: email,
-    source: source === "temp" ? "temp" : "microsoft",
-    service: source === "temp" ? "Cloud Mail" : "Outlook",
+    source: normalizedSource,
+    service: normalizedSource === "temp" ? "Cloud Mail" : normalizedSource === "generic" ? "普通邮箱" : "Outlook",
     category: String(item?.label || item?.category || "").trim(),
     auth_file: null,
   };
-  if (source === "temp") {
+  if (normalizedSource === "generic") {
+    return {
+      ...base,
+      password: String(item?.password || item?.token || ""),
+      username: String(item?.username || ""),
+      mode: normalizeGenericMode(item?.mode || item?.provider),
+      imap_host: String(item?.imap_host || item?.imapHost || item?.base_url || item?.baseUrl || ""),
+      imap_port: Number(item?.imap_port || item?.imapPort || 993),
+      pop3_host: String(item?.pop3_host || item?.pop3Host || ""),
+      pop3_port: Number(item?.pop3_port || item?.pop3Port || 995),
+    };
+  }
+  if (normalizedSource === "temp") {
     return {
       ...base,
       jwt: String(item?.jwt || ""),
@@ -2822,6 +2905,12 @@ function mergeServerAccountsSnapshot(items) {
         refresh_token: preferRealSecret(item.refresh_token, existing.refresh_token),
         jwt: preferRealSecret(item.jwt, existing.jwt),
         site_password: preferRealSecret(item.site_password, existing.site_password),
+        username: item.username || existing.username || "",
+        mode: item.mode || existing.mode || "auto",
+        imap_host: item.imap_host || existing.imap_host || "",
+        imap_port: item.imap_port || existing.imap_port || 993,
+        pop3_host: item.pop3_host || existing.pop3_host || "",
+        pop3_port: item.pop3_port || existing.pop3_port || 995,
         base_url: item.base_url || existing.base_url || "",
         category: item.category || existing.category || "",
         auth_file: existing.auth_file || item.auth_file || null,
@@ -2835,24 +2924,28 @@ function mergeServerAccountsSnapshot(items) {
 
 async function syncAccountsFromServer({ quiet = false } = {}) {
   try {
-    const [accountsResponse, tempResponse] = await Promise.all([
+    const [accountsResponse, tempResponse, genericResponse] = await Promise.all([
       fetch("/client-api/accounts", { headers: apiHeaders(), cache: "no-store" }),
       fetch("/client-api/temp-addresses", { headers: apiHeaders(), cache: "no-store" }),
+      fetch("/client-api/generic-accounts", { headers: apiHeaders(), cache: "no-store" }),
     ]);
-    const [accountsData, tempData] = await Promise.all([
-      accountsResponse.json(),
-      tempResponse.json(),
+    const [accountsData, tempData, genericData] = await Promise.all([
+      readJsonResponse(accountsResponse, "同步 Outlook 邮箱失败"),
+      readJsonResponse(tempResponse, "同步临时邮箱失败"),
+      readJsonResponse(genericResponse, "同步普通邮箱失败"),
     ]);
     if (!accountsResponse.ok) throw new Error(accountsData.error || accountsResponse.statusText || "Failed to load Outlook accounts");
     if (!tempResponse.ok) throw new Error(tempData.error || tempResponse.statusText || "Failed to load temp accounts");
+    if (!genericResponse.ok) throw new Error(genericData.error || genericResponse.statusText || "Failed to load generic accounts");
     const serverManagedBeforeIds = new Set(
       state.accounts
-        .filter((account) => ["microsoft", "temp"].includes(account.source))
+        .filter((account) => ["microsoft", "temp", "generic"].includes(account.source))
         .map((account) => account.id)
     );
     const syncedAccounts = [
       ...((accountsData.accounts || []).map((item) => normalizeServerAccount(item, "microsoft")).filter(Boolean)),
       ...((tempData.addresses || []).map((item) => normalizeServerAccount(item, "temp")).filter(Boolean)),
+      ...((genericData.accounts || []).map((item) => normalizeServerAccount(item, "generic")).filter(Boolean)),
     ];
     mergeServerAccountsSnapshot(syncedAccounts);
     if (syncedAccounts.length || serverManagedBeforeIds.size) {

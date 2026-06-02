@@ -1633,6 +1633,11 @@ button:disabled {
   color: #087456;
 }
 
+.source-badge.generic {
+  background: rgba(124, 91, 255, 0.12);
+  color: #6246c8;
+}
+
 .source-badge.refresh-badge.success {
   background: rgba(17, 138, 97, 0.13);
   color: var(--ok);

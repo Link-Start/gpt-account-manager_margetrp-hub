@@ -68,6 +68,13 @@ const MAIL_SERVICES = {
     hint: "粘贴格式：邮箱----JWT。也可以写：邮箱----JWT----分组。Temp API 已默认填好。",
     placeholder: "user@example.com----JWT_TOKEN",
   },
+  generic: {
+    label: "普通邮箱",
+    source: "generic",
+    tone: "generic",
+    hint: "支持常见 IMAP/POP3 邮箱：邮箱----密码；可选：邮箱----密码----imap.example.com----993----分组。",
+    placeholder: "user@gmail.com----app-password\nuser@example.com----password----imap.example.com----993----分组",
+  },
 };
 
 const els = {
@@ -319,6 +326,9 @@ function accountHasMaskedCredential(account) {
   if (account.source === "microsoft") {
     return isMaskedSecret(account.refresh_token) || isMaskedSecret(account.client_id);
   }
+  if (account.source === "generic") {
+    return isMaskedSecret(account.password);
+  }
   return isMaskedSecret(account.jwt) || isMaskedSecret(account.site_password);
 }
 
@@ -328,6 +338,9 @@ function hasUsableLocalCredential(account) {
     return Boolean(account.email && account.client_id && account.refresh_token
       && !isMaskedSecret(account.client_id) && !isMaskedSecret(account.refresh_token));
   }
+  if (account.source === "generic") {
+    return Boolean(account.email && account.password && !isMaskedSecret(account.password));
+  }
   return Boolean(account.email && account.jwt && !isMaskedSecret(account.jwt)
     && !isMaskedSecret(account.site_password));
 }
@@ -336,6 +349,7 @@ function accountIdsForPayload(payload) {
   return new Set([
     ...(payload.accounts || []).map((item) => `microsoft:${String(item.email || "").toLowerCase()}`),
     ...(payload.temp_addresses || []).map((item) => `temp:${String(item.email || "").toLowerCase()}`),
+    ...(payload.generic_accounts || []).map((item) => `generic:${String(item.email || "").toLowerCase()}`),
   ]);
 }
 
@@ -380,6 +394,9 @@ function clientPayloadForSync(payload) {
       address.email && address.jwt
       && !isMaskedSecret(address.jwt) && !isMaskedSecret(address.site_password)
     ),
+    generic_accounts: (payload.generic_accounts || []).filter((account) =>
+      account.email && account.password && !isMaskedSecret(account.password)
+    ),
   };
 }
 
@@ -388,6 +405,8 @@ function payloadHasMaskedCredentials(payload) {
     isMaskedSecret(account.refresh_token) || isMaskedSecret(account.client_id)
   ) || (payload.temp_addresses || []).some((address) =>
     isMaskedSecret(address.jwt) || isMaskedSecret(address.site_password)
+  ) || (payload.generic_accounts || []).some((account) =>
+    isMaskedSecret(account.password)
   );
 }
 
@@ -435,6 +454,11 @@ const MAIL_ERROR_LABELS = {
   temp_invalid_credential: "临时邮箱 JWT 无效",
   temp_config_missing: "临时邮箱配置缺失",
   temp_api_http_error: "临时邮箱 API 异常",
+  generic_config_missing: "普通邮箱配置缺失",
+  generic_auth_failed: "普通邮箱认证失败",
+  generic_imap_failed: "普通邮箱 IMAP 失败",
+  generic_pop3_failed: "普通邮箱 POP3 失败",
+  generic_api_failed: "普通邮箱 API 失败",
   outlook_credential_format: "Outlook 凭证格式错误",
   outlook_client_mismatch: "Outlook client_id 不匹配",
   outlook_refresh_expired: "Outlook RT 过期",
@@ -453,8 +477,10 @@ function sourceForResult(result) {
   const source = String(result?.source || "").toLowerCase();
   if (source === "temp") return "temp";
   if (source === "microsoft") return "microsoft";
+  if (source === "generic") return "generic";
   const provider = String(result?.provider || "").toLowerCase();
   if (provider.includes("temp") || provider.includes("cf")) return "temp";
+  if (provider.includes("imap") || provider.includes("pop3") || provider.includes("cloudmail") || provider.includes("luckmail") || provider.includes("inbucket")) return "generic";
   return "";
 }
 
@@ -591,10 +617,63 @@ function looksLikeMicrosoftRefreshToken(value) {
   return text.length >= 20 && !looksLikeUrl(text);
 }
 
+function normalizeGenericMode(value) {
+  const text = String(value || "auto").trim().toLowerCase().replace("_", "-");
+  const aliases = {
+    pop: "pop3",
+    "mail-pop": "pop3",
+    "mail-pop3": "pop3",
+    "mail-imap": "imap",
+    "cloud-mail": "cloudmail",
+    skymail: "cloudmail",
+    "luck-mail": "luckmail",
+    "luckmail-api": "luckmail",
+    luckyous: "luckmail",
+  };
+  const normalized = aliases[text] || text;
+  return ["auto", "imap", "pop3", "cloudmail", "luckmail", "inbucket"].includes(normalized) ? normalized : "auto";
+}
+
+function isGenericApiMode(value) {
+  return ["cloudmail", "luckmail", "inbucket"].includes(normalizeGenericMode(value));
+}
+
+function genericAccountPayload(account) {
+  return {
+    email: account.email,
+    password: account.password || account.token || "",
+    username: account.username || "",
+    mode: normalizeGenericMode(account.mode || account.provider),
+    imap_host: account.imap_host || account.imapHost || account.base_url || account.baseUrl || "",
+    imap_port: Number(account.imap_port || account.imapPort || 993),
+    pop3_host: account.pop3_host || account.pop3Host || "",
+    pop3_port: Number(account.pop3_port || account.pop3Port || 995),
+    category: account.category || account.label || "",
+  };
+}
+
 function normalizeStoredAccount(account) {
   if (!account || typeof account !== "object") return null;
   const email = String(account.email || "").trim();
   if (!email.includes("@")) return null;
+  if (account.source === "generic" || String(account.id || "").startsWith("generic:")) {
+    const payload = genericAccountPayload({ ...account, email });
+    return {
+      ...account,
+      ...payload,
+      id: `generic:${email.toLowerCase()}`,
+      source: "generic",
+      service: "普通邮箱",
+      email,
+      token: "",
+      client_id: "",
+      refresh_token: "",
+      jwt: "",
+      site_password: "",
+      category: account.category === "默认" ? "" : (payload.category || ""),
+      selected: account.selected !== false,
+    };
+  }
   if (account.source === "temp"
     && looksLikeMicrosoftClientId(account.category)
     && looksLikeMicrosoftRefreshToken(account.site_password)) {
@@ -730,7 +809,9 @@ function serviceInfo(source) {
 }
 
 function serviceTone(account) {
-  return account.source === "microsoft" ? "ms" : "temp";
+  if (account.source === "microsoft") return "ms";
+  if (account.source === "generic") return "generic";
+  return "temp";
 }
 
 function serviceForParsedParts(parts, selectedSource) {
@@ -743,7 +824,8 @@ function serviceForParsedParts(parts, selectedSource) {
     && !looksLikeJwt(parts[1] || "")
     && looksLikeMicrosoftClientId(maybeClientId)
     && looksLikeMicrosoftRefreshToken(maybeRefreshToken);
-  return looksMicrosoft ? MAIL_SERVICES.microsoft : MAIL_SERVICES.temp;
+  if (looksMicrosoft) return MAIL_SERVICES.microsoft;
+  return looksLikeJwt(parts[1] || "") ? MAIL_SERVICES.temp : MAIL_SERVICES.generic;
 }
 
 function addClientLog(message, type = "info") {
@@ -768,6 +850,32 @@ function normalizeServerMailbox(item, source) {
   if (!email) return null;
   const status = item?.last_status || "idle";
   const category = String(item?.label || item?.category || "").trim();
+  if (source === "generic") {
+    return normalizeStoredAccount({
+      id: `generic:${email.toLowerCase()}`,
+      source: "generic",
+      service: "普通邮箱",
+      email,
+      password: String(item?.password || item?.token || ""),
+      username: String(item?.username || item?.user || ""),
+      mode: String(item?.mode || item?.provider || "auto"),
+      imap_host: String(item?.imap_host || item?.imapHost || item?.base_url || item?.baseUrl || ""),
+      imap_port: Number(item?.imap_port || item?.imapPort || 993),
+      pop3_host: String(item?.pop3_host || item?.pop3Host || ""),
+      pop3_port: Number(item?.pop3_port || item?.pop3Port || 995),
+      category,
+      created_at: item?.created_at || "",
+      updated_at: item?.updated_at || "",
+      last_check_at: item?.last_check_at || "",
+      last_status: status,
+      last_error: item?.last_error || "",
+      last_error_code: item?.last_error_code || "",
+      last_error_label: item?.last_error_label || "",
+      last_error_hint: item?.last_error_hint || "",
+      last_message_count: Number(item?.last_message_count || 0),
+      selected: true,
+    });
+  }
   if (source === "temp") {
     return {
       id: `temp:${email.toLowerCase()}`,
@@ -830,6 +938,12 @@ function mergeServerAccountsSnapshot(items) {
         refresh_token: preferRealSecret(item.refresh_token, existing.refresh_token),
         jwt: preferRealSecret(item.jwt, existing.jwt),
         site_password: preferRealSecret(item.site_password, existing.site_password),
+        username: item.username || existing.username || "",
+        mode: item.mode || existing.mode || "auto",
+        imap_host: item.imap_host || existing.imap_host || "",
+        imap_port: item.imap_port || existing.imap_port || 993,
+        pop3_host: item.pop3_host || existing.pop3_host || "",
+        pop3_port: item.pop3_port || existing.pop3_port || 995,
         base_url: item.base_url || existing.base_url || "",
         category: item.category || existing.category || "",
         updated_at: item.updated_at || existing.updated_at || new Date().toISOString(),
@@ -854,13 +968,15 @@ function mergeServerAccountsSnapshot(items) {
 async function syncAccountsFromServer({ silent = false } = {}) {
   if (!hasAdminToken()) return false;
   try {
-    const [accountsResponse, tempResponse] = await Promise.all([
+    const [accountsResponse, tempResponse, genericResponse] = await Promise.all([
       fetch("/client-api/accounts", { headers: apiHeaders(), cache: "no-store" }),
       fetch("/client-api/temp-addresses", { headers: apiHeaders(), cache: "no-store" }),
+      fetch("/client-api/generic-accounts", { headers: apiHeaders(), cache: "no-store" }),
     ]);
-    const [accountsData, tempData] = await Promise.all([
+    const [accountsData, tempData, genericData] = await Promise.all([
       readJsonResponse(accountsResponse, "/client-api/accounts"),
       readJsonResponse(tempResponse, "/client-api/temp-addresses"),
+      readJsonResponse(genericResponse, "/client-api/generic-accounts"),
     ]);
     if (!accountsResponse.ok) {
       throw new Error(accountsData.error || accountsResponse.statusText || "服务端账号列表读取失败");
@@ -868,9 +984,13 @@ async function syncAccountsFromServer({ silent = false } = {}) {
     if (!tempResponse.ok) {
       throw new Error(tempData.error || tempResponse.statusText || "服务端临时邮箱列表读取失败");
     }
+    if (!genericResponse.ok) {
+      throw new Error(genericData.error || genericResponse.statusText || "服务端普通邮箱列表读取失败");
+    }
     const normalized = [
       ...((accountsData.accounts || []).map((item) => normalizeServerMailbox(item, "microsoft")).filter(Boolean)),
       ...((tempData.addresses || []).map((item) => normalizeServerMailbox(item, "temp")).filter(Boolean)),
+      ...((genericData.accounts || []).map((item) => normalizeServerMailbox(item, "generic")).filter(Boolean)),
     ];
     const summary = mergeServerAccountsSnapshot(normalized);
     if (!silent) {
@@ -1021,10 +1141,12 @@ function structuredRowsFromObjects(items, source) {
       return;
     }
     const category = pickValue(item, ["category", "label", "group", "tag"]);
-    const rowSource = service.source === "auto" && (
-      pickValue(item, ["client_id", "clientId"]) || pickValue(item, ["refresh_token", "refreshToken"])
-    ) ? "microsoft" : service.source;
-    const rowService = rowSource === "microsoft" ? MAIL_SERVICES.microsoft : MAIL_SERVICES.temp;
+    const hasMicrosoft = pickValue(item, ["client_id", "clientId"]) || pickValue(item, ["refresh_token", "refreshToken"]);
+    const hasTempJwt = looksLikeJwt(pickValue(item, ["jwt", "access_token", "credential"]));
+    const rowSource = service.source === "auto"
+      ? (hasMicrosoft ? "microsoft" : (hasTempJwt ? "temp" : "generic"))
+      : service.source;
+    const rowService = MAIL_SERVICES[rowSource] || MAIL_SERVICES.generic;
     if (rowService.source === "temp") {
       rows.push({
         id: `temp:${email.toLowerCase()}`,
@@ -1037,6 +1159,22 @@ function structuredRowsFromObjects(items, source) {
         category,
         selected: true,
       });
+      return;
+    }
+    if (rowService.source === "generic") {
+      rows.push(normalizeStoredAccount({
+        source: "generic",
+        email,
+        password: pickValue(item, ["password", "pass", "token", "app_password", "appPassword"]),
+        username: pickValue(item, ["username", "user", "mailbox"]),
+        mode: pickValue(item, ["mode", "provider", "type"]),
+        imap_host: pickValue(item, ["imap_host", "imapHost", "base_url", "baseUrl", "api_url", "apiUrl", "host"]),
+        imap_port: pickValue(item, ["imap_port", "imapPort", "port"]),
+        pop3_host: pickValue(item, ["pop3_host", "pop3Host"]),
+        pop3_port: pickValue(item, ["pop3_port", "pop3Port"]),
+        category,
+        selected: true,
+      }));
       return;
     }
     rows.push({
@@ -1466,6 +1604,7 @@ function payloadForSync() {
   const source = els.sourceFilter.value;
   const includeTemp = source === "all" || source === "temp";
   const includeMicrosoft = source === "all" || source === "microsoft";
+  const includeGeneric = source === "all" || source === "generic";
   return {
     source,
     emails: targets.map((account) => account.email).filter(Boolean),
@@ -1490,15 +1629,26 @@ function payloadForSync() {
         refresh_token: account.refresh_token,
         category: account.category,
       })) : [],
+    generic_accounts: includeGeneric ? targets
+      .filter((account) => account.source === "generic")
+      .map(genericAccountPayload) : [],
   };
 }
 
 function accountPayloadForMessage(message) {
+  const source = message.source === "temp" ? "temp" : (message.source === "generic" ? "generic" : "microsoft");
   const account = state.accounts.find((item) =>
-    item.source === (message.source === "temp" ? "temp" : "microsoft")
+    item.source === source
     && item.email.toLowerCase() === String(message.account || "").toLowerCase()
   );
-  if (!account) return { accounts: [], temp_addresses: [] };
+  if (!account) return { accounts: [], temp_addresses: [], generic_accounts: [] };
+  if (account.source === "generic") {
+    return {
+      accounts: [],
+      temp_addresses: [],
+      generic_accounts: [genericAccountPayload(account)],
+    };
+  }
   if (account.source === "temp") {
     return {
       accounts: [],
@@ -1509,6 +1659,7 @@ function accountPayloadForMessage(message) {
         site_password: account.site_password,
         category: account.category,
       }],
+      generic_accounts: [],
     };
   }
   return {
@@ -1520,6 +1671,7 @@ function accountPayloadForMessage(message) {
       category: account.category,
     }],
     temp_addresses: [],
+    generic_accounts: [],
   };
 }
 
@@ -1734,6 +1886,9 @@ function loginPayload(row) {
         base_url: normalizeTempWorkerUrl(item.base_url || els.importTempApi.value || DEFAULT_TEMP_WORKER_URL),
         site_password: item.site_password,
       })),
+    generic_accounts: sameEmail
+      .filter((item) => item.source === "generic")
+      .map(genericAccountPayload),
   };
 }
 
@@ -2333,6 +2488,44 @@ function parseTempParts(parts, service, email) {
   };
 }
 
+function parseGenericParts(parts, service, email) {
+  const password = parts[1] || "";
+  const third = parts[2] || "";
+  const fourth = parts[3] || "";
+  const fifth = parts[4] || "";
+  const sixth = parts[5] || "";
+  let mode = normalizeGenericMode(fourth && !/^\d+$/.test(fourth) ? fourth : fifth);
+  let host = third && !/^\d+$/.test(third) ? third : "";
+  let category = "";
+  let username = "";
+  if (mode === "auto" && isGenericApiMode(third)) {
+    mode = normalizeGenericMode(third);
+    host = "";
+  }
+  if (/^\d+$/.test(fourth)) {
+    category = isGenericApiMode(fifth) ? sixth : fifth;
+  } else if (isGenericApiMode(mode)) {
+    username = mode === "luckmail" ? fifth : "";
+    category = mode === "luckmail" ? sixth : fifth;
+  } else {
+    category = fifth;
+  }
+  return normalizeStoredAccount({
+    source: "generic",
+    service: service.label,
+    email,
+    password,
+    username,
+    mode,
+    imap_host: mode === "pop3" ? "" : host,
+    imap_port: /^\d+$/.test(fourth) ? Number(fourth) : 993,
+    pop3_host: mode === "pop3" ? host : "",
+    pop3_port: /^\d+$/.test(fourth) ? Number(fourth) : 995,
+    category,
+    selected: true,
+  });
+}
+
 function parseLines(text, source) {
   const service = MAIL_SERVICES[source] || MAIL_SERVICES.microsoft;
   const structured = parseStructuredText(text, source);
@@ -2353,6 +2546,10 @@ function parseLines(text, source) {
     const rowService = serviceForParsedParts(parts, source);
     if (rowService.source === "temp") {
       rows.push(parseTempParts(parts, rowService, email));
+      return;
+    }
+    if (rowService.source === "generic") {
+      rows.push(parseGenericParts(parts, rowService, email));
       return;
     }
     rows.push({
@@ -2382,9 +2579,12 @@ function importPreviewText() {
   const { rows, errors } = parseLines(text, source);
   const temp = rows.filter((row) => row.source === "temp").length;
   const microsoft = rows.filter((row) => row.source === "microsoft").length;
+  const generic = rows.filter((row) => row.source === "generic").length;
   const duplicateCount = rows.length - new Set(rows.map((row) => row.id)).size;
   const missing = rows.filter((row) =>
-    row.source === "temp" ? !row.jwt : (!row.password || !row.client_id || !row.refresh_token)
+    row.source === "temp" ? !row.jwt
+      : row.source === "generic" ? !row.password
+        : (!row.password || !row.client_id || !row.refresh_token)
   ).length;
   const issues = errors.length + missing;
   els.importPreview.className = `import-preview ${issues ? "warning" : "ok"}`;
@@ -2392,6 +2592,7 @@ function importPreviewText() {
     `识别 ${rows.length} 个账号`,
     temp ? `临时邮箱 ${temp}` : "",
     microsoft ? `Outlook ${microsoft}` : "",
+    generic ? `普通邮箱 ${generic}` : "",
     duplicateCount ? `重复 ${duplicateCount}` : "",
     missing ? `缺少凭证 ${missing}` : "",
     errors.length ? `格式错误 ${errors.length}` : "",
@@ -2433,7 +2634,64 @@ function upsertAccounts(incoming) {
 
 async function persistImportedAccounts(source, rows) {
   if (!rows.length) return { imported: 0, updated: 0, localOnly: true };
-  return { imported: rows.length, updated: 0, localOnly: true };
+  const results = [];
+  const microsoftRows = rows.filter((row) => row.source === "microsoft");
+  const tempRows = rows.filter((row) => row.source === "temp");
+  const genericRows = rows.filter((row) => row.source === "generic");
+  if (microsoftRows.length) {
+    const response = await fetch("/client-api/accounts/import-pickup", {
+      method: "POST",
+      headers: apiHeaders(),
+      body: JSON.stringify({ text: microsoftRows.map((row) => [
+        row.email,
+        row.password || "",
+        row.client_id || "",
+        row.refresh_token || "",
+        row.category || "",
+      ].join("----")).join("\n") }),
+    });
+    const data = await readJsonResponse(response, "/client-api/accounts/import-pickup");
+    if (!response.ok) throw new Error(data.error || "Outlook 导入失败");
+    results.push(data);
+  }
+  if (tempRows.length) {
+    const response = await fetch("/client-api/temp-addresses/import", {
+      method: "POST",
+      headers: apiHeaders(),
+      body: JSON.stringify({
+        text: tempRows.map((row) => [
+          row.email,
+          row.jwt || "",
+          row.base_url || "",
+          row.site_password || "",
+          row.category || "",
+        ].join("----")).join("\n"),
+        base_url: normalizeTempWorkerUrl(els.importTempApi.value),
+        site_password: els.importTempSitePassword.value.trim(),
+      }),
+    });
+    const data = await readJsonResponse(response, "/client-api/temp-addresses/import");
+    if (!response.ok) throw new Error(data.error || "临时邮箱导入失败");
+    results.push(data);
+  }
+  if (genericRows.length) {
+    const response = await fetch("/client-api/generic-accounts/import", {
+      method: "POST",
+      headers: apiHeaders(),
+      body: JSON.stringify({ text: genericRows.map((row) => [
+        row.email,
+        row.password || "",
+        row.imap_host || row.pop3_host || "",
+        row.mode === "pop3" ? (row.pop3_port || "") : (row.imap_port || ""),
+        row.mode || "auto",
+        row.category || "",
+      ].join("----")).join("\n") }),
+    });
+    const data = await readJsonResponse(response, "/client-api/generic-accounts/import");
+    if (!response.ok) throw new Error(data.error || "普通邮箱导入失败");
+    results.push(data);
+  }
+  return { imported: rows.length, updated: 0, results };
 }
 
 async function importAccounts(source, text) {
@@ -2582,7 +2840,7 @@ async function syncMail() {
     return;
   }
   const payload = payloadForSync();
-  const total = payload.temp_addresses.length + payload.accounts.length;
+  const total = payload.temp_addresses.length + payload.accounts.length + payload.generic_accounts.length;
   if (!total) {
     toast("当前筛选下没有可刷新邮箱");
     return;
@@ -2607,7 +2865,7 @@ async function syncMail() {
     const requestPayload = useServerStoredAccounts ? serverPayloadForSync() : clientPayloadForSync(payload);
     requestPayload.provider = provider;
     setInlineProgress(els.mailProgress, 20, "请求中");
-    addClientLog(`刷新请求：${requestPayload.accounts?.length || 0} 个 Outlook，${requestPayload.temp_addresses?.length || 0} 个临时邮箱，方式 ${provider}`, "info");
+    addClientLog(`刷新请求：${requestPayload.accounts?.length || 0} 个 Outlook，${requestPayload.temp_addresses?.length || 0} 个临时邮箱，${requestPayload.generic_accounts?.length || 0} 个普通邮箱，方式 ${provider}`, "info");
     addClientLog(useServerStoredAccounts
       ? "本次使用管理员服务端保存的打码账号刷新"
       : "本次使用当前浏览器本地导入的邮箱凭证刷新", "info");
@@ -2696,7 +2954,7 @@ function pushActiveMessageAccountToRefresh() {
       name: account.email,
       account_id: account.id,
       source: account.source,
-      service: account.source === "microsoft" ? (account.service || "Outlook") : "临时邮箱",
+      service: serviceInfo(account.source),
       status: "idle",
       error: "",
       logs: [],

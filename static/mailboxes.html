@@ -79,6 +79,10 @@
           <span>临时邮箱</span>
           <strong id="sideTemp">0</strong>
         </button>
+        <button class="mailbox-side-link" type="button" data-manager-filter="generic">
+          <span>普通邮箱</span>
+          <strong id="sideGeneric">0</strong>
+        </button>
         <button class="mailbox-side-link danger" type="button" data-manager-filter="error">
           <span>错误邮箱</span>
           <strong id="sideError">0</strong>
@@ -105,6 +109,7 @@
             <span>总数 <strong id="statTotal">0</strong></span>
             <span>Outlook <strong id="statMicrosoft">0</strong></span>
             <span>临时 <strong id="statTemp">0</strong></span>
+            <span>普通 <strong id="statGeneric">0</strong></span>
           </div>
         </div>
 
@@ -114,6 +119,7 @@
             <option value="all">全部来源</option>
             <option value="microsoft">Outlook</option>
             <option value="temp">临时邮箱</option>
+            <option value="generic">普通邮箱</option>
           </select>
           <select id="mailboxGroupFilter" aria-label="分组筛选">
             <option value="all">全部分组</option>
@@ -194,6 +200,7 @@
           <option value="auto">自动识别</option>
           <option value="microsoft">Outlook 邮箱</option>
           <option value="temp">临时邮箱</option>
+          <option value="generic">普通邮箱</option>
         </select>
       </label>
       <label class="modal-field" id="mailboxTempApiField">
@@ -221,7 +228,7 @@
     </section>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="/mailboxes.js?v=20260602-import-batch-order" defer></script>
+  <script src="/mailboxes.js?v=20260603-generic-mail-provider" defer></script>
 </body>
 </html>
 

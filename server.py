@@ -10,6 +10,7 @@ import imaplib
 import ipaddress
 import json
 import os
+import poplib
 import re
 import secrets
 import shutil
@@ -35,7 +36,7 @@ from email.utils import parsedate_to_datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 def normalize_base_url(value: str) -> str:
@@ -67,12 +68,13 @@ WORKSPACES_DIR = DATA_DIR / "workspaces"
 ACCOUNTS_FILE = DATA_DIR / "accounts.json"
 MESSAGES_FILE = DATA_DIR / "messages.json"
 TEMP_ADDRESSES_FILE = DATA_DIR / "temp_addresses.json"
+GENERIC_ACCOUNTS_FILE = DATA_DIR / "generic_accounts.json"
 REFRESH_RESULTS_FILE = DATA_DIR / "refresh_results.json"
 LOGIN_HISTORY_FILE = DATA_DIR / "login_history.json"
 LOGIN_DEBUG_DIR = DATA_DIR / "login_debug"
 UPGRADE_REQUEST_FILE = DATA_DIR / "upgrade_request.json"
 UPGRADE_RESULT_FILE = DATA_DIR / "upgrade_result.json"
-APP_VERSION = "20260602-import-batch-order"
+APP_VERSION = "20260603-generic-mail-provider"
 
 DEFAULT_HOST = os.environ.get("MAIL_PICKUP_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("MAIL_PICKUP_PORT", "8765"))
@@ -91,6 +93,25 @@ TEMP_WORKER_DNS_FALLBACK_IPS = [
     if item.strip()
 ]
 TEMP_WORKER_DNS_FALLBACK_HOST = urllib.parse.urlparse(DEFAULT_TEMP_WORKER_URL).hostname or ""
+GENERIC_MAIL_HOSTS: dict[str, dict[str, Any]] = {
+    "gmail.com": {"imap_host": "imap.gmail.com", "pop3_host": "pop.gmail.com"},
+    "googlemail.com": {"imap_host": "imap.gmail.com", "pop3_host": "pop.gmail.com"},
+    "icloud.com": {"imap_host": "imap.mail.me.com", "pop3_host": "pop.mail.me.com"},
+    "me.com": {"imap_host": "imap.mail.me.com", "pop3_host": "pop.mail.me.com"},
+    "mac.com": {"imap_host": "imap.mail.me.com", "pop3_host": "pop.mail.me.com"},
+    "qq.com": {"imap_host": "imap.qq.com", "pop3_host": "pop.qq.com"},
+    "foxmail.com": {"imap_host": "imap.qq.com", "pop3_host": "pop.qq.com"},
+    "163.com": {"imap_host": "imap.163.com", "pop3_host": "pop.163.com"},
+    "126.com": {"imap_host": "imap.126.com", "pop3_host": "pop.126.com"},
+    "yeah.net": {"imap_host": "imap.yeah.net", "pop3_host": "pop.yeah.net"},
+    "sina.com": {"imap_host": "imap.sina.com", "pop3_host": "pop.sina.com"},
+    "sina.cn": {"imap_host": "imap.sina.cn", "pop3_host": "pop.sina.cn"},
+    "sohu.com": {"imap_host": "imap.sohu.com", "pop3_host": "pop3.sohu.com"},
+    "yahoo.com": {"imap_host": "imap.mail.yahoo.com", "pop3_host": "pop.mail.yahoo.com"},
+    "zoho.com": {"imap_host": "imap.zoho.com", "pop3_host": "pop.zoho.com"},
+    "2925.com": {"imap_host": "imap.2925.com", "pop3_host": "pop.2925.com"},
+}
+GENERIC_MAIL_MODES = {"auto", "imap", "pop3", "cloudmail", "luckmail", "inbucket"}
 OPENAI_STATIC_FALLBACK_IPS = {
     "chatgpt.com": ["104.18.32.47", "172.64.155.209"],
     "auth.openai.com": ["104.18.41.241", "172.64.146.15"],
@@ -245,6 +266,33 @@ class TempAddress:
         return data
 
 
+@dataclass
+class GenericMailAccount:
+    email: str
+    password: str = ""
+    username: str = ""
+    mode: str = "auto"
+    imap_host: str = ""
+    imap_port: int = 993
+    pop3_host: str = ""
+    pop3_port: int = 995
+    label: str = ""
+    created_at: str = field(default_factory=lambda: iso_now())
+    updated_at: str = field(default_factory=lambda: iso_now())
+    last_check_at: str = ""
+    last_status: str = "idle"
+    last_error: str = ""
+    last_error_code: str = ""
+    last_error_label: str = ""
+    last_error_hint: str = ""
+    last_message_count: int = 0
+
+    def public(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["password"] = mask_secret(self.password)
+        return data
+
+
 def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -268,6 +316,71 @@ def is_masked_secret(value: Any) -> bool:
 def usable_secret(value: Any) -> bool:
     text = coerce_text(value)
     return bool(text and not is_masked_secret(text))
+
+
+def coerce_port(value: Any, default: int) -> int:
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return default
+    return port if 1 <= port <= 65535 else default
+
+
+def normalize_generic_mail_mode(value: Any) -> str:
+    text = coerce_text(value).lower().replace("_", "-")
+    aliases = {
+        "pop": "pop3",
+        "mail-pop": "pop3",
+        "mail-pop3": "pop3",
+        "mail-imap": "imap",
+        "cloud-mail": "cloudmail",
+        "skymail": "cloudmail",
+        "luck-mail": "luckmail",
+        "luckmail-api": "luckmail",
+        "luckyous": "luckmail",
+        "mail2925": "auto",
+        "2925": "auto",
+        "mail-pickup-tool": "auto",
+    }
+    normalized = aliases.get(text, text)
+    return normalized if normalized in GENERIC_MAIL_MODES else "auto"
+
+
+def infer_generic_mail_config(email_addr: str) -> dict[str, Any]:
+    domain = email_addr.rsplit("@", 1)[1].lower() if "@" in email_addr else ""
+    direct = GENERIC_MAIL_HOSTS.get(domain)
+    if direct:
+        return dict(direct)
+    parts = domain.split(".")
+    if len(parts) > 2:
+        parent = ".".join(parts[-2:])
+        if parent in GENERIC_MAIL_HOSTS:
+            return dict(GENERIC_MAIL_HOSTS[parent])
+    if domain:
+        return {
+            "imap_host": f"imap.{domain}",
+            "pop3_host": f"pop.{domain}",
+        }
+    return {}
+
+
+def normalize_generic_account(account: GenericMailAccount) -> GenericMailAccount:
+    account.email = coerce_text(account.email).lower()
+    account.password = coerce_text(account.password)
+    account.mode = normalize_generic_mail_mode(account.mode)
+    account.username = coerce_text(account.username)
+    if account.mode not in {"cloudmail", "luckmail", "inbucket"}:
+        account.username = account.username or account.email
+    inferred = infer_generic_mail_config(account.email)
+    account.imap_host = coerce_text(account.imap_host or inferred.get("imap_host"))
+    account.pop3_host = coerce_text(account.pop3_host or inferred.get("pop3_host"))
+    if account.mode not in {"cloudmail", "luckmail", "inbucket"}:
+        account.imap_host = account.imap_host.lower()
+        account.pop3_host = account.pop3_host.lower()
+    account.imap_port = coerce_port(account.imap_port, 993)
+    account.pop3_port = coerce_port(account.pop3_port, 995)
+    account.label = coerce_text(account.label)
+    return account
 
 
 def file_item_count(path: Path, key: str) -> int:
@@ -318,6 +431,7 @@ def workspace_counts(workspace_id: str) -> dict[str, int]:
     return {
         "microsoft_accounts": file_item_count(workspace_file(workspace_id, "accounts.json"), "accounts"),
         "temp_addresses": file_item_count(workspace_file(workspace_id, "temp_addresses.json"), "addresses"),
+        "generic_accounts": file_item_count(workspace_file(workspace_id, "generic_accounts.json"), "accounts"),
         "messages": file_item_count(workspace_file(workspace_id, "messages.json"), "messages"),
     }
 
@@ -348,6 +462,7 @@ def health_payload() -> dict[str, Any]:
         "data_counts": {
             "microsoft_accounts": file_item_count(ACCOUNTS_FILE, "accounts"),
             "temp_addresses": file_item_count(TEMP_ADDRESSES_FILE, "addresses"),
+            "generic_accounts": file_item_count(GENERIC_ACCOUNTS_FILE, "accounts"),
             "messages": file_item_count(MESSAGES_FILE, "messages"),
         },
         "storage": {
@@ -489,6 +604,46 @@ def save_temp_addresses(addresses: dict[str, TempAddress], path: Path = TEMP_ADD
     payload = {
         "updated_at": iso_now(),
         "addresses": [asdict(addr) for addr in sorted(addresses.values(), key=lambda a: a.email.lower())],
+    }
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def load_generic_accounts(path: Path = GENERIC_ACCOUNTS_FILE) -> dict[str, GenericMailAccount]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError:
+        return {}
+    rows = raw.get("accounts", []) if isinstance(raw, dict) else raw
+    if not isinstance(rows, list):
+        return {}
+    accounts: dict[str, GenericMailAccount] = {}
+    allowed = set(GenericMailAccount.__dataclass_fields__.keys())
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        try:
+            item = dict(item)
+            item["mode"] = normalize_generic_mail_mode(item.get("mode") or item.get("provider"))
+            item["imap_port"] = coerce_port(item.get("imap_port") or item.get("imapPort"), 993)
+            item["pop3_port"] = coerce_port(item.get("pop3_port") or item.get("pop3Port"), 995)
+            clean = {key: item.get(key) for key in allowed if key in item}
+            account = normalize_generic_account(GenericMailAccount(**clean))
+            accounts[account.email.lower()] = account
+        except TypeError:
+            continue
+    return accounts
+
+
+def save_generic_accounts(accounts: dict[str, GenericMailAccount], path: Path = GENERIC_ACCOUNTS_FILE) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "updated_at": iso_now(),
+        "accounts": [asdict(acc) for acc in sorted(accounts.values(), key=lambda a: a.email.lower())],
     }
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -751,6 +906,65 @@ def parse_temp_address_lines(text: str) -> tuple[list[TempAddress], list[str]]:
             label=parts[4] if len(parts) >= 5 else "",
         ))
     return addresses, errors
+
+
+def parse_generic_account_lines(text: str) -> tuple[list[GenericMailAccount], list[str]]:
+    accounts: list[GenericMailAccount] = []
+    errors: list[str] = []
+    for idx, line in enumerate(text.splitlines(), start=1):
+        clean = line.strip().lstrip("\ufeff")
+        if not clean or clean.startswith("#"):
+            continue
+        if "----" in clean:
+            parts = [part.strip() for part in clean.split("----")]
+        else:
+            parts = [part.strip() for part in clean.split(",")]
+        email_addr = parts[0] if parts else ""
+        password = parts[1] if len(parts) >= 2 else ""
+        if "@" not in email_addr:
+            errors.append(f"Line {idx}: invalid generic email")
+            continue
+        if not password:
+            errors.append(f"Line {idx}: missing password/token")
+            continue
+        third = parts[2] if len(parts) >= 3 else ""
+        fourth = parts[3] if len(parts) >= 4 else ""
+        fifth = parts[4] if len(parts) >= 5 else ""
+        sixth = parts[5] if len(parts) >= 6 else ""
+        mode = normalize_generic_mail_mode(fourth if fourth and not fourth.isdigit() else fifth)
+        if mode == "auto" and third and looks_like_provider_token(third):
+            mode = normalize_generic_mail_mode(third)
+            third = ""
+        host_value = third if third and not third.isdigit() else ""
+        imap_host = host_value if mode != "pop3" else ""
+        pop3_host = host_value if mode == "pop3" else ""
+        imap_port = coerce_port(fourth if fourth.isdigit() else "", 993)
+        pop3_port = coerce_port(fourth if fourth.isdigit() else "", 995)
+        username = fifth if mode == "luckmail" and fifth else ""
+        label = ""
+        if fourth.isdigit():
+            label = sixth if looks_like_provider_token(fifth) else fifth
+        elif mode in {"cloudmail", "luckmail", "inbucket"}:
+            label = (sixth if mode == "luckmail" else fifth)
+        elif fifth:
+            label = fifth
+        account = GenericMailAccount(
+            email=email_addr,
+            password=password,
+            username=username,
+            mode=mode,
+            imap_host=imap_host,
+            imap_port=imap_port,
+            pop3_host=pop3_host,
+            pop3_port=pop3_port,
+            label=label,
+        )
+        accounts.append(normalize_generic_account(account))
+    return accounts, errors
+
+
+def looks_like_provider_token(value: Any) -> bool:
+    return normalize_generic_mail_mode(value) in {"cloudmail", "luckmail", "inbucket"}
 
 
 def http_json(url: str, *, method: str = "GET", data: dict[str, Any] | None = None,
@@ -1596,6 +1810,39 @@ def open_imap_ssl(server: str):
     return imaplib.IMAP4_SSL(server, 993, ssl_context=ssl.create_default_context(), timeout=30)
 
 
+def open_imap_ssl_port(server: str, port: int):
+    return imaplib.IMAP4_SSL(server, port, ssl_context=ssl.create_default_context(), timeout=30)
+
+
+def append_imap_raw_message(
+    messages: list[dict[str, Any]],
+    *,
+    account_email: str,
+    provider: str,
+    folder: str,
+    mid: str,
+    raw: bytes,
+) -> None:
+    msg = email_lib.message_from_bytes(raw)
+    subject = decode_mime_header(msg.get("Subject", ""))
+    sender = decode_mime_header(msg.get("From", ""))
+    body, html_body = extract_body_parts(msg)
+    if not body and html_body:
+        body = strip_html(html_body)
+    messages.append(normalize_message(
+        account=account_email,
+        source="generic",
+        provider=provider,
+        folder=folder,
+        mid=mid,
+        sender=sender,
+        subject=subject,
+        body=body,
+        html_body=html_body,
+        received_at=msg.get("Date", ""),
+    ))
+
+
 def fetch_imap_messages_with_connection(
     imap: imaplib.IMAP4_SSL,
     account: MailAccount,
@@ -1646,6 +1893,310 @@ def fetch_imap_messages_with_connection(
         except imaplib.IMAP4.error:
             continue
     return messages
+
+
+def fetch_generic_imap_messages(account: GenericMailAccount, *, limit: int, sender_filter: str = "") -> list[dict[str, Any]]:
+    account = normalize_generic_account(account)
+    if not account.imap_host:
+        raise RuntimeError("generic IMAP host missing")
+    if not usable_secret(account.password):
+        raise RuntimeError("generic mail password missing")
+    messages: list[dict[str, Any]] = []
+    try:
+        with open_imap_ssl_port(account.imap_host, account.imap_port) as imap:
+            imap.login(account.username or account.email, account.password)
+            for folder in IMAP_FOLDERS:
+                try:
+                    status, _ = imap.select(f'"{folder}"', readonly=True)
+                    if status != "OK":
+                        continue
+                    if sender_filter:
+                        status, ids_raw = imap.uid("search", None, f'(OR FROM "{sender_filter}" TEXT "{sender_filter}")')
+                    else:
+                        status, ids_raw = imap.uid("search", None, "ALL")
+                    if status != "OK" or not ids_raw or not ids_raw[0]:
+                        continue
+                    ids = ids_raw[0].split()[-limit:]
+                    for mid in reversed(ids):
+                        status, msg_data = imap.uid("fetch", mid, "(RFC822)")
+                        if status != "OK" or not msg_data or not msg_data[0]:
+                            continue
+                        append_imap_raw_message(
+                            messages,
+                            account_email=account.email,
+                            provider="imap",
+                            folder=folder,
+                            mid=mid.decode("utf-8", errors="ignore"),
+                            raw=msg_data[0][1],
+                        )
+                        if len(messages) >= limit:
+                            return messages
+                except imaplib.IMAP4.error:
+                    continue
+    except OSError as exc:
+        raise RuntimeError(network_error_message(f"imaps://{account.imap_host}:{account.imap_port}", exc)) from exc
+    except imaplib.IMAP4.error as exc:
+        raise RuntimeError(f"generic IMAP auth/fetch failed: {exc}") from exc
+    return messages
+
+
+def fetch_generic_pop3_messages(account: GenericMailAccount, *, limit: int, sender_filter: str = "") -> list[dict[str, Any]]:
+    account = normalize_generic_account(account)
+    if not account.pop3_host:
+        raise RuntimeError("generic POP3 host missing")
+    if not usable_secret(account.password):
+        raise RuntimeError("generic mail password missing")
+    messages: list[dict[str, Any]] = []
+    try:
+        with poplib.POP3_SSL(account.pop3_host, account.pop3_port, timeout=30) as pop:
+            pop.user(account.username or account.email)
+            pop.pass_(account.password)
+            count = len(pop.list()[1])
+            ids = list(range(max(1, count - max(limit * 2, limit) + 1), count + 1))
+            for msg_num in reversed(ids):
+                _, lines, _ = pop.retr(msg_num)
+                raw = b"\r\n".join(lines)
+                msg = email_lib.message_from_bytes(raw)
+                subject = decode_mime_header(msg.get("Subject", ""))
+                sender = decode_mime_header(msg.get("From", ""))
+                body, html_body = extract_body_parts(msg)
+                combined = f"{sender} {subject} {body} {strip_html(html_body)}".lower()
+                if sender_filter and sender_filter.lower() not in combined:
+                    continue
+                messages.append(normalize_message(
+                    account=account.email,
+                    source="generic",
+                    provider="pop3",
+                    folder="POP3",
+                    mid=str(msg_num),
+                    sender=sender,
+                    subject=subject,
+                    body=body or strip_html(html_body),
+                    html_body=html_body,
+                    received_at=msg.get("Date", ""),
+                ))
+                if len(messages) >= limit:
+                    return messages
+    except OSError as exc:
+        raise RuntimeError(network_error_message(f"pop3s://{account.pop3_host}:{account.pop3_port}", exc)) from exc
+    except poplib.error_proto as exc:
+        raise RuntimeError(f"generic POP3 auth/fetch failed: {exc}") from exc
+    return messages
+
+
+def normalize_cloudmail_messages(payload: Any, account: GenericMailAccount, limit: int) -> list[dict[str, Any]]:
+    rows = []
+    if isinstance(payload, list):
+        rows = payload
+    elif isinstance(payload, dict):
+        for candidate in (
+            payload.get("data"),
+            payload.get("list"),
+            payload.get("items"),
+            payload.get("rows"),
+            payload.get("records"),
+            (payload.get("data") or {}).get("list") if isinstance(payload.get("data"), dict) else None,
+            (payload.get("data") or {}).get("records") if isinstance(payload.get("data"), dict) else None,
+        ):
+            if isinstance(candidate, list):
+                rows = candidate
+                break
+    messages: list[dict[str, Any]] = []
+    for row in rows[: max(limit * 2, limit)]:
+        if not isinstance(row, dict):
+            continue
+        address = first_text(row.get("toEmail"), row.get("to_email"), row.get("recipient"), row.get("address"), row.get("email")).lower()
+        if address and address != account.email.lower():
+            continue
+        html_body = first_text(row.get("content"), row.get("html"), row.get("raw"))
+        body = first_text(row.get("text"), row.get("plainText"), row.get("content_text")) or strip_html(html_body)
+        messages.append(normalize_message(
+            account=account.email,
+            source="generic",
+            provider="cloudmail",
+            folder="api",
+            mid=first_text(row.get("emailId"), row.get("id"), row.get("mailId"), row.get("mail_id")),
+            sender=first_text(row.get("sendEmail"), row.get("send_email"), row.get("from"), row.get("sender"), row.get("mailFrom")),
+            subject=first_text(row.get("subject"), row.get("title")),
+            body=body,
+            html_body=html_body,
+            received_at=first_text(row.get("createTime"), row.get("create_time"), row.get("createdAt"), row.get("created_at"), row.get("receivedDateTime"), row.get("date")),
+        ))
+        if len(messages) >= limit:
+            break
+    return messages
+
+
+def fetch_cloudmail_messages(account: GenericMailAccount, *, limit: int, sender_filter: str = "") -> list[dict[str, Any]]:
+    base_url = normalize_base_url(account.imap_host)
+    token = account.password
+    if not base_url or not usable_secret(token):
+        raise RuntimeError("Cloud Mail requires API URL and token")
+    payload = http_request_json(
+        f"{base_url}/api/public/emailList",
+        method="POST",
+        json_data={
+            "toEmail": account.email,
+            "type": 0,
+            "isDel": 0,
+            "timeSort": "desc",
+            "num": 1,
+            "size": max(limit, 20),
+        },
+        headers={"Authorization": token},
+        timeout=30,
+    )
+    messages = normalize_cloudmail_messages(payload, account, limit)
+    if sender_filter:
+        needle = sender_filter.lower()
+        messages = [message for message in messages if needle in f"{message.get('sender', '')} {message.get('subject', '')} {message.get('body', '')}".lower()]
+    return messages[:limit]
+
+
+def normalize_luckmail_messages(payload: Any, account: GenericMailAccount, limit: int) -> list[dict[str, Any]]:
+    mails = []
+    if isinstance(payload, dict):
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        for candidate in (payload.get("mails"), data.get("mails"), payload.get("items"), data.get("items"), payload.get("list"), data.get("list")):
+            if isinstance(candidate, list):
+                mails = candidate
+                break
+    elif isinstance(payload, list):
+        mails = payload
+    if not isinstance(mails, list):
+        mails = []
+    messages: list[dict[str, Any]] = []
+    for row in mails[: max(limit * 2, limit)]:
+        if not isinstance(row, dict):
+            continue
+        html_body = first_text(row.get("html_body"), row.get("body_html"), row.get("html"))
+        body = first_text(row.get("body"), row.get("body_text"), row.get("text")) or strip_html(html_body)
+        messages.append(normalize_message(
+            account=account.email,
+            source="generic",
+            provider="luckmail",
+            folder="api",
+            mid=first_text(row.get("message_id"), row.get("id")),
+            sender=first_text(row.get("from"), row.get("sender")),
+            subject=first_text(row.get("subject"), row.get("title")),
+            body=body,
+            html_body=html_body,
+            received_at=first_text(row.get("received_at"), row.get("receivedAt"), row.get("created_at")),
+        ))
+        if len(messages) >= limit:
+            break
+    return messages
+
+
+def fetch_luckmail_messages(account: GenericMailAccount, *, limit: int, sender_filter: str = "") -> list[dict[str, Any]]:
+    base_url = normalize_base_url(account.imap_host) or "https://mails.luckyous.com"
+    token = account.password
+    headers = {}
+    if account.username:
+        headers["X-API-Key"] = account.username
+    payload = http_request_json(
+        f"{base_url}/api/v1/openapi/email/token/{urllib.parse.quote(token)}/mails",
+        headers=headers,
+        timeout=30,
+    )
+    messages = normalize_luckmail_messages(payload, account, limit)
+    if sender_filter:
+        needle = sender_filter.lower()
+        messages = [message for message in messages if needle in f"{message.get('sender', '')} {message.get('subject', '')} {message.get('body', '')}".lower()]
+    return messages[:limit]
+
+
+def normalize_inbucket_messages(payload: Any, account: GenericMailAccount, limit: int) -> list[dict[str, Any]]:
+    rows: list[Any] = []
+    if isinstance(payload, list):
+        rows = payload
+    elif isinstance(payload, dict):
+        for candidate in (
+            payload.get("messages"),
+            payload.get("mails"),
+            payload.get("mailbox"),
+            payload.get("items"),
+            (payload.get("data") or {}).get("messages") if isinstance(payload.get("data"), dict) else None,
+            (payload.get("data") or {}).get("items") if isinstance(payload.get("data"), dict) else None,
+        ):
+            if isinstance(candidate, list):
+                rows = candidate
+                break
+    messages: list[dict[str, Any]] = []
+    for row in rows[: max(limit * 2, limit)]:
+        if not isinstance(row, dict):
+            continue
+        html_body = first_text(row.get("html"), row.get("bodyHtml"), row.get("body_html"))
+        body = first_text(row.get("body"), row.get("text"), row.get("bodyText"), row.get("body_text"), row.get("preview")) or strip_html(html_body)
+        sender_value = row.get("from")
+        sender = sender_value.get("address") if isinstance(sender_value, dict) else sender_value
+        messages.append(normalize_message(
+            account=account.email,
+            source="generic",
+            provider="inbucket",
+            folder="api",
+            mid=first_text(row.get("id"), row.get("messageId"), row.get("message_id"), row.get("mailId")),
+            sender=first_text(sender, row.get("sender"), row.get("fromAddress")),
+            subject=first_text(row.get("subject"), row.get("title")),
+            body=body,
+            html_body=html_body,
+            received_at=first_text(row.get("date"), row.get("created"), row.get("created_at"), row.get("receivedAt"), row.get("received_at")),
+        ))
+        if len(messages) >= limit:
+            break
+    return messages
+
+
+def fetch_inbucket_messages(account: GenericMailAccount, *, limit: int, sender_filter: str = "") -> list[dict[str, Any]]:
+    base_url = normalize_base_url(account.imap_host)
+    mailbox = coerce_text(account.username) or account.email.split("@", 1)[0]
+    if not base_url:
+        raise RuntimeError("Inbucket requires base URL")
+    if not mailbox:
+        raise RuntimeError("Inbucket mailbox missing")
+    attempts = [
+        f"{base_url}/api/v1/mailbox/{urllib.parse.quote(mailbox)}",
+        f"{base_url}/api/v1/mailbox/{urllib.parse.quote(mailbox)}/messages",
+        f"{base_url}/api/mailbox/{urllib.parse.quote(mailbox)}",
+        f"{base_url}/api/messages?mailbox={urllib.parse.quote(mailbox)}",
+    ]
+    last_error = ""
+    for url in attempts:
+        try:
+            payload = http_request_json(url, timeout=30)
+            messages = normalize_inbucket_messages(payload, account, limit)
+            if sender_filter:
+                needle = sender_filter.lower()
+                messages = [message for message in messages if needle in f"{message.get('sender', '')} {message.get('subject', '')} {message.get('body', '')}".lower()]
+            return messages[:limit]
+        except Exception as exc:
+            last_error = str(exc)
+    raise RuntimeError(f"Inbucket API fetch failed: {last_error}")
+
+
+def fetch_generic_messages(account: GenericMailAccount, provider: str, *, limit: int, sender_filter: str = "") -> tuple[list[dict[str, Any]], str]:
+    account = normalize_generic_account(account)
+    mode = normalize_generic_mail_mode(provider if provider in {"imap", "pop3", "cloudmail", "luckmail", "inbucket"} else account.mode)
+    if mode == "cloudmail":
+        return fetch_cloudmail_messages(account, limit=limit, sender_filter=sender_filter), "cloudmail"
+    if mode == "luckmail":
+        return fetch_luckmail_messages(account, limit=limit, sender_filter=sender_filter), "luckmail"
+    if mode == "inbucket":
+        return fetch_inbucket_messages(account, limit=limit, sender_filter=sender_filter), "inbucket"
+    if mode == "pop3":
+        return fetch_generic_pop3_messages(account, limit=limit, sender_filter=sender_filter), "pop3"
+    errors: list[str] = []
+    try:
+        return fetch_generic_imap_messages(account, limit=limit, sender_filter=sender_filter), "imap"
+    except Exception as exc:
+        errors.append(f"imap: {exc}")
+        if mode == "imap":
+            raise
+    try:
+        return fetch_generic_pop3_messages(account, limit=limit, sender_filter=sender_filter), "pop3"
+    except Exception as exc:
+        errors.append(f"pop3: {exc}")
+    raise RuntimeError("; ".join(errors) or "generic mail fetch failed")
 
 
 def decode_mime_header(value: str) -> str:
@@ -2051,6 +2602,11 @@ MAIL_FETCH_ERROR_LABELS = {
     "imap_token_failed": "IMAP 授权失败",
     "graph_fetch_failed": "Graph 收信失败",
     "imap_fetch_failed": "IMAP 收信失败",
+    "generic_config_missing": "普通邮箱配置缺失",
+    "generic_auth_failed": "普通邮箱认证失败",
+    "generic_imap_failed": "普通邮箱 IMAP 失败",
+    "generic_pop3_failed": "普通邮箱 POP3 失败",
+    "generic_api_failed": "普通邮箱 API 失败",
     "network_tls_eof": "网络连接被截断",
     "network_failed": "网络请求失败",
     "mail_fetch_timeout": "单个邮箱取信超时",
@@ -2075,6 +2631,36 @@ def classify_mail_fetch_error(raw: str, source: str = "") -> dict[str, Any]:
     elif "临时邮箱 api 返回 http" in lowered or ("http" in lowered and source == "temp" and any(token in lowered for token in ["401", "403", "404", "500"])):
         code = "temp_api_http_error"
         hint = "目标 API 拒绝了本次取信请求；请检查 API 地址、站点密码或该邮箱的 JWT。"
+    elif source == "generic" and (
+        "host missing" in lowered
+        or "password missing" in lowered
+        or "requires api url" in lowered
+        or "requires base url" in lowered
+    ):
+        code = "generic_config_missing"
+        hint = "普通邮箱需要邮箱、密码/令牌，以及可用的 IMAP/POP3 主机或第三方 API 地址；请补齐后重试。"
+        retryable = False
+    elif source == "generic" and (
+        "auth/fetch failed" in lowered
+        or "authentication failed" in lowered
+        or "login failed" in lowered
+        or "invalid credentials" in lowered
+        or "invalid password" in lowered
+        or "[auth" in lowered
+        or " -err " in lowered
+    ):
+        code = "generic_auth_failed"
+        hint = "普通邮箱登录认证失败；请确认使用的是邮箱授权码/应用专用密码，不是网页登录密码。"
+        retryable = False
+    elif source == "generic" and any(token in lowered for token in ["cloudmail", "luckmail", "inbucket", "api fetch failed", "http 401", "http 403", "http 404"]):
+        code = "generic_api_failed"
+        hint = "第三方邮箱 API 返回异常；请检查 API URL、Token/API Key 和邮箱是否对应。"
+    elif source == "generic" and "pop3:" in lowered:
+        code = "generic_pop3_failed"
+        hint = "普通邮箱 POP3 收信失败；请确认 POP3 已开启、主机端口正确，并使用授权码。"
+    elif source == "generic" and "imap:" in lowered:
+        code = "generic_imap_failed"
+        hint = "普通邮箱 IMAP 收信失败；请确认 IMAP 已开启、主机端口正确，并使用授权码。"
     elif (
         "服务器 dns 解析失败" in message
         or "temporary failure in name resolution" in lowered
@@ -2126,7 +2712,7 @@ def classify_mail_fetch_error(raw: str, source: str = "") -> dict[str, Any]:
     }
 
 
-def apply_mail_fetch_result_fields(target: MailAccount | TempAddress, result: dict[str, Any]) -> None:
+def apply_mail_fetch_result_fields(target: MailAccount | TempAddress | GenericMailAccount, result: dict[str, Any]) -> None:
     target.last_status = "ok" if result.get("ok") else "error"
     target.last_check_at = coerce_text(result.get("checked_at") or iso_now())
     target.last_message_count = int(result.get("message_count") or 0)
@@ -2136,11 +2722,11 @@ def apply_mail_fetch_result_fields(target: MailAccount | TempAddress, result: di
     target.last_error_hint = coerce_text(result.get("error_hint") or "")
 
 
-def mail_fetch_error_result(kind: str, target: MailAccount | TempAddress, message: str, *, elapsed_ms: int = 0) -> dict[str, Any]:
+def mail_fetch_error_result(kind: str, target: MailAccount | TempAddress | GenericMailAccount, message: str, *, elapsed_ms: int = 0) -> dict[str, Any]:
     detail = classify_mail_fetch_error(f"{kind}: {message}", kind)
     result = {
         "source": kind,
-        "provider": "temp" if kind == "temp" else "auto",
+        "provider": "temp" if kind == "temp" else getattr(target, "mode", "auto"),
         "email": getattr(target, "email", ""),
         "ok": False,
         "checked_at": iso_now(),
@@ -2253,8 +2839,45 @@ def fetch_for_temp_address(address: TempAddress, limit: int, sender_filter: str)
     return result
 
 
+def fetch_for_generic_account(account: GenericMailAccount, provider: str, limit: int, sender_filter: str) -> dict[str, Any]:
+    started = time.perf_counter()
+    checked_at = iso_now()
+    used_provider = normalize_generic_mail_mode(provider if provider not in {"auto", ""} else account.mode)
+    try:
+        messages, used_provider = fetch_generic_messages(account, provider, limit=limit, sender_filter=sender_filter)
+        account.last_status = "ok"
+        account.last_error = ""
+    except Exception as exc:
+        messages = []
+        account.last_status = "error"
+        account.last_error = str(exc)[:500]
+    account.last_check_at = checked_at
+    detail = classify_mail_fetch_error(account.last_error, "generic") if account.last_status != "ok" else {}
+    result = {
+        "source": "generic",
+        "provider": used_provider or account.mode or "auto",
+        "email": account.email,
+        "ok": account.last_status == "ok",
+        "checked_at": checked_at,
+        "elapsed_ms": round((time.perf_counter() - started) * 1000),
+        "message_count": len(messages),
+        "messages": messages,
+        "errors": [] if account.last_status == "ok" else [account.last_error],
+    }
+    if detail:
+        result.update({
+            "error": detail["error_detail"],
+            "error_code": detail["error_code"],
+            "error_label": detail["error_label"],
+            "error_hint": detail["error_hint"],
+            "retryable": detail["retryable"],
+        })
+    apply_mail_fetch_result_fields(account, result)
+    return result
+
+
 def run_mail_fetch_jobs(
-    jobs: list[tuple[str, MailAccount | TempAddress, str, int, str]],
+    jobs: list[tuple[str, MailAccount | TempAddress | GenericMailAccount, str, int, str]],
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> list[dict[str, Any]]:
     if not jobs:
@@ -2264,12 +2887,17 @@ def run_mail_fetch_jobs(
     total = len(jobs)
     processed = 0
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(fetch_for_account, target, provider, limit, sender_filter)
-            if kind == "microsoft"
-            else executor.submit(fetch_for_temp_address, target, limit, sender_filter): index
-            for index, (kind, target, provider, limit, sender_filter) in enumerate(jobs)
-        }
+        futures = {}
+        for index, (kind, target, provider, limit, sender_filter) in enumerate(jobs):
+            if kind == "microsoft":
+                future = executor.submit(fetch_for_account, target, provider, limit, sender_filter)
+            elif kind == "temp":
+                future = executor.submit(fetch_for_temp_address, target, limit, sender_filter)
+            elif kind == "generic":
+                future = executor.submit(fetch_for_generic_account, target, provider, limit, sender_filter)
+            else:
+                future = executor.submit(mail_fetch_error_result, kind, target, f"unsupported source: {kind}")
+            futures[future] = index
         for future in as_completed(futures):
             index = futures[future]
             kind, target, *_ = jobs[index]
@@ -5275,6 +5903,7 @@ def build_cpa_repair_login_payload(base_payload: dict[str, Any], row: dict[str, 
     email_addr = coerce_text(row.get("email") or row.get("account"))
     accounts = [item for item in base_payload.get("accounts", []) if isinstance(item, dict) and coerce_text(item.get("email")).lower() == email_addr.lower()]
     temp_addresses = [item for item in base_payload.get("temp_addresses", []) if isinstance(item, dict) and coerce_text(item.get("email")).lower() == email_addr.lower()]
+    generic_accounts = [item for item in base_payload.get("generic_accounts", []) if isinstance(item, dict) and coerce_text(item.get("email")).lower() == email_addr.lower()]
     force_email_code = str(first_text(
         base_payload.get("force_email_code"),
         base_payload.get("forceEmailCode"),
@@ -5286,7 +5915,7 @@ def build_cpa_repair_login_payload(base_payload: dict[str, Any], row: dict[str, 
         row.get("password"),
         *(item.get("password") for item in accounts),
     )
-    if not accounts and not temp_addresses:
+    if not accounts and not temp_addresses and not generic_accounts:
         raise RuntimeError("本地没有匹配的邮箱取件凭证")
     return {
         **base_payload,
@@ -5299,6 +5928,7 @@ def build_cpa_repair_login_payload(base_payload: dict[str, Any], row: dict[str, 
         "row": row,
         "accounts": accounts,
         "temp_addresses": temp_addresses,
+        "generic_accounts": generic_accounts,
     }
 
 
@@ -6314,6 +6944,7 @@ def fetch_login_verification_code(payload: dict[str, Any], *, since: float = 0, 
             "emails": [payload.get("email", "")],
             "accounts": payload.get("accounts", []),
             "temp_addresses": payload.get("temp_addresses", []),
+            "generic_accounts": payload.get("generic_accounts", []),
         })
         live_messages = data.get("messages", []) if isinstance(data.get("messages"), list) else []
         errors = data.get("errors", []) if isinstance(data.get("errors"), list) else []
@@ -7313,6 +7944,7 @@ def fetch_registration_verification_link(payload: dict[str, Any], *, since: floa
                 "emails": [payload.get("email", "")],
                 "accounts": payload.get("accounts", []),
                 "temp_addresses": payload.get("temp_addresses", []),
+                "generic_accounts": payload.get("generic_accounts", []),
             })
             messages = data.get("messages") or []
             sorted_messages = sorted(messages, key=message_sort_value, reverse=True)
@@ -7667,7 +8299,8 @@ def start_cpa_login_job(payload: dict[str, Any], workspace_id: str = "public") -
                 job_id,
                 (
                     "邮箱取码凭证已从服务端补齐："
-                    f"Outlook {summary.get('microsoft', 0)}，临时邮箱 {summary.get('temp', 0)}"
+                    f"Outlook {summary.get('microsoft', 0)}，临时邮箱 {summary.get('temp', 0)}，"
+                    f"普通邮箱 {summary.get('generic', 0)}"
                 ),
                 "info",
                 "mail_credentials",
@@ -7675,7 +8308,10 @@ def start_cpa_login_job(payload: dict[str, Any], workspace_id: str = "public") -
     counts = login_mail_credential_counts(payload)
     append_login_log(
         job_id,
-        f"邮箱取码凭证：Outlook {counts.get('microsoft', 0)}，临时邮箱 {counts.get('temp', 0)}",
+        (
+            f"邮箱取码凭证：Outlook {counts.get('microsoft', 0)}，"
+            f"临时邮箱 {counts.get('temp', 0)}，普通邮箱 {counts.get('generic', 0)}"
+        ),
         "info" if counts.get("total", 0) else "warning",
         "mail_credentials",
     )
@@ -7709,7 +8345,13 @@ def login_mail_credential_counts(payload: dict[str, Any]) -> dict[str, int]:
             continue
         if usable_secret(item.get("jwt")):
             temp += 1
-    return {"microsoft": microsoft, "temp": temp, "total": microsoft + temp}
+    generic = 0
+    for item in payload.get("generic_accounts", []):
+        if not isinstance(item, dict):
+            continue
+        if usable_secret(item.get("password") or item.get("token")):
+            generic += 1
+    return {"microsoft": microsoft, "temp": temp, "generic": generic, "total": microsoft + temp + generic}
 
 
 def hydrate_login_mail_credentials(payload: dict[str, Any], workspace_id: str = "public") -> dict[str, int]:
@@ -7723,14 +8365,16 @@ def hydrate_login_mail_credentials(payload: dict[str, Any], workspace_id: str = 
         selected_emails.append(email_addr)
     selected_emails = list(dict.fromkeys(selected_emails))
     if not selected_emails:
-        return {"microsoft": 0, "temp": 0, "added": 0, "updated": 0}
+        return {"microsoft": 0, "temp": 0, "generic": 0, "added": 0, "updated": 0}
     accounts = [item for item in payload.get("accounts", []) if isinstance(item, dict)]
     temp_addresses = [item for item in payload.get("temp_addresses", []) if isinstance(item, dict)]
+    generic_accounts = [item for item in payload.get("generic_accounts", []) if isinstance(item, dict)]
     added = 0
     updated = 0
 
     stored_accounts = load_accounts(workspace_file(workspace_id, "accounts.json"))
     stored_temp_addresses = load_temp_addresses(workspace_file(workspace_id, "temp_addresses.json"))
+    stored_generic_accounts = load_generic_accounts(workspace_file(workspace_id, "generic_accounts.json"))
 
     def same_email(item: dict[str, Any], target: str) -> bool:
         return coerce_text(item.get("email")).lower() == target
@@ -7781,8 +8425,36 @@ def hydrate_login_mail_credentials(payload: dict[str, Any], workspace_id: str = 
                 temp_addresses.append(stored_item)
                 added += 1
 
+    for target_email in selected_emails:
+        if any(same_email(item, target_email) and usable_secret(item.get("password") or item.get("token")) for item in generic_accounts):
+            continue
+        stored_generic = stored_generic_accounts.get(target_email)
+        if stored_generic and usable_secret(stored_generic.password):
+            stored_item = {
+                "email": stored_generic.email,
+                "password": stored_generic.password,
+                "username": stored_generic.username,
+                "mode": stored_generic.mode,
+                "imap_host": stored_generic.imap_host,
+                "imap_port": stored_generic.imap_port,
+                "pop3_host": stored_generic.pop3_host,
+                "pop3_port": stored_generic.pop3_port,
+                "label": stored_generic.label,
+            }
+            replaced = False
+            for index, item in enumerate(generic_accounts):
+                if same_email(item, target_email):
+                    generic_accounts[index] = {**item, **stored_item}
+                    replaced = True
+                    updated += 1
+                    break
+            if not replaced:
+                generic_accounts.append(stored_item)
+                added += 1
+
     payload["accounts"] = accounts
     payload["temp_addresses"] = temp_addresses
+    payload["generic_accounts"] = generic_accounts
     counts = login_mail_credential_counts(payload)
     return {**counts, "added": added, "updated": updated}
 
@@ -7844,23 +8516,60 @@ def transient_temp_addresses(payload: dict[str, Any]) -> tuple[list[TempAddress]
     return addresses, errors
 
 
+def transient_generic_accounts(payload: dict[str, Any]) -> tuple[list[GenericMailAccount], list[str]]:
+    accounts: list[GenericMailAccount] = []
+    errors: list[str] = []
+    if payload.get("generic_text"):
+        parsed, parsed_errors = parse_generic_account_lines(str(payload.get("generic_text", "")))
+        accounts.extend(parsed)
+        errors.extend(parsed_errors)
+    for idx, item in enumerate(payload.get("generic_accounts", []), start=1):
+        if not isinstance(item, dict):
+            errors.append(f"Generic account {idx}: invalid object")
+            continue
+        email_addr = coerce_text(item.get("email"))
+        password = coerce_text(item.get("password") or item.get("token"))
+        if "@" not in email_addr:
+            errors.append(f"Generic account {idx}: invalid email")
+            continue
+        if not usable_secret(password):
+            errors.append(f"Generic account {idx}: missing password/token")
+            continue
+        accounts.append(normalize_generic_account(GenericMailAccount(
+            email=email_addr,
+            password=password,
+            username=coerce_text(item.get("username") or item.get("user")),
+            mode=coerce_text(item.get("mode") or item.get("provider")),
+            imap_host=coerce_text(item.get("imap_host") or item.get("imapHost") or item.get("base_url") or item.get("baseUrl") or item.get("api_url") or item.get("apiUrl")),
+            imap_port=coerce_port(item.get("imap_port") or item.get("imapPort"), 993),
+            pop3_host=coerce_text(item.get("pop3_host") or item.get("pop3Host")),
+            pop3_port=coerce_port(item.get("pop3_port") or item.get("pop3Port"), 995),
+            label=coerce_text(item.get("label") or item.get("category")),
+        )))
+    return accounts, errors
+
+
 def fetch_transient_client_mail(
     payload: dict[str, Any],
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     accounts, account_errors = transient_mail_accounts(payload)
     temp_addresses, temp_errors = transient_temp_addresses(payload)
+    generic_accounts, generic_errors = transient_generic_accounts(payload)
     if temp_addresses and not TEMP_WORKER_URL and any(not address.base_url for address in temp_addresses):
         raise RuntimeError("GPT_ACCOUNT_MANAGER_TEMP_WORKER_URL is required for temp mailbox refresh")
     if temp_addresses:
         for address in temp_addresses:
             validate_configured_base_url(normalize_temp_worker_url(address.base_url or TEMP_WORKER_URL))
+    for account in generic_accounts:
+        if normalize_generic_mail_mode(account.mode) in {"cloudmail", "luckmail", "inbucket"} and account.imap_host:
+            validate_configured_base_url(normalize_base_url(account.imap_host))
     selected = {email.lower() for email in payload.get("emails", []) if isinstance(email, str)}
     source = coerce_text(payload.get("source") or "all").lower()
     provider = coerce_text(payload.get("provider") or "auto").lower()
     sender_filter = coerce_text(payload.get("sender_filter"))
     limit = max(1, min(int(payload.get("limit", 20) or 20), 50))
-    jobs: list[tuple[str, MailAccount | TempAddress, str, int, str]] = []
+    jobs: list[tuple[str, MailAccount | TempAddress | GenericMailAccount, str, int, str]] = []
 
     if source in {"all", "microsoft"}:
         for account in accounts:
@@ -7872,6 +8581,11 @@ def fetch_transient_client_mail(
             if selected and address.email.lower() not in selected:
                 continue
             jobs.append(("temp", address, provider, limit, sender_filter))
+    if source in {"all", "generic"}:
+        for account in generic_accounts:
+            if selected and account.email.lower() not in selected:
+                continue
+            jobs.append(("generic", account, provider, limit, sender_filter))
 
     results = run_mail_fetch_jobs(jobs, progress_callback=progress_callback)
     messages = [message for result in results for message in result.get("messages", [])]
@@ -7879,7 +8593,7 @@ def fetch_transient_client_mail(
     return {
         "results": results,
         "messages": sorted(messages, key=message_sort_value, reverse=True),
-        "errors": account_errors + temp_errors,
+        "errors": account_errors + temp_errors + generic_errors,
         "summary": {
             "total": len(results),
             "ok": len(results) - len(failed_results),
@@ -7945,7 +8659,8 @@ def start_client_mail_fetch_job(payload: dict[str, Any], workspace_id: str = "pu
     hydrate_login_mail_credentials(payload, workspace)
     accounts, account_errors = transient_mail_accounts(payload)
     temp_addresses, temp_errors = transient_temp_addresses(payload)
-    total = len(accounts) + len(temp_addresses)
+    generic_accounts, generic_errors = transient_generic_accounts(payload)
+    total = len(accounts) + len(temp_addresses) + len(generic_accounts)
     if total <= 0:
         raise RuntimeError("当前筛选下没有可刷新邮箱")
     job_id = secrets.token_urlsafe(12)
@@ -7961,7 +8676,7 @@ def start_client_mail_fetch_job(payload: dict[str, Any], workspace_id: str = "pu
         "current_email": "",
         "result": None,
         "error": "",
-        "warnings": account_errors + temp_errors,
+        "warnings": account_errors + temp_errors + generic_errors,
     }
     with MAIL_FETCH_JOBS_LOCK:
         MAIL_FETCH_JOBS[job_id] = job
@@ -8221,6 +8936,47 @@ def import_temp_addresses(payload: dict[str, Any], workspace_id: str = "public")
     }
 
 
+def import_generic_accounts(payload: dict[str, Any], workspace_id: str = "public") -> dict[str, Any]:
+    incoming, errors = parse_generic_account_lines(str(payload.get("text", "")))
+    accounts_path = workspace_file(workspace_id, "generic_accounts.json")
+    accounts = load_generic_accounts(accounts_path)
+    imported = 0
+    updated = 0
+    skipped = 0
+    replace_existing = True
+    for account in incoming:
+        key = account.email.lower()
+        existing = accounts.get(key)
+        if existing:
+            if not replace_existing:
+                skipped += 1
+                continue
+            account.created_at = existing.created_at
+            if not usable_secret(account.password):
+                account.password = existing.password
+            if not account.username:
+                account.username = existing.username
+            if not account.imap_host:
+                account.imap_host = existing.imap_host
+            if not account.pop3_host:
+                account.pop3_host = existing.pop3_host
+            updated += 1
+        else:
+            imported += 1
+        account.updated_at = iso_now()
+        accounts[key] = normalize_generic_account(account)
+    if imported or updated:
+        save_generic_accounts(accounts, accounts_path)
+    return {
+        "success": True,
+        "imported": imported,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+        "accounts": [acc.public() for acc in accounts.values()],
+    }
+
+
 def delete_workspace_mail_credentials(payload: dict[str, Any], workspace_id: str = "public") -> dict[str, Any]:
     emails = [
         coerce_text(item).lower()
@@ -8230,29 +8986,38 @@ def delete_workspace_mail_credentials(payload: dict[str, Any], workspace_id: str
     unique = list(dict.fromkeys(emails))
     accounts_path = workspace_file(workspace_id, "accounts.json")
     temp_path = workspace_file(workspace_id, "temp_addresses.json")
+    generic_path = workspace_file(workspace_id, "generic_accounts.json")
     accounts = load_accounts(accounts_path)
     addresses = load_temp_addresses(temp_path)
+    generic_accounts = load_generic_accounts(generic_path)
     deleted_microsoft = 0
     deleted_temp = 0
+    deleted_generic = 0
     for email_addr in unique:
         if accounts.pop(email_addr, None) is not None:
             deleted_microsoft += 1
         if addresses.pop(email_addr, None) is not None:
             deleted_temp += 1
+        if generic_accounts.pop(email_addr, None) is not None:
+            deleted_generic += 1
     if deleted_microsoft:
         save_accounts(accounts, accounts_path)
     if deleted_temp:
         save_temp_addresses(addresses, temp_path)
+    if deleted_generic:
+        save_generic_accounts(generic_accounts, generic_path)
     return {
         "success": True,
         "emails": unique,
         "deleted": {
             "microsoft": deleted_microsoft,
             "temp": deleted_temp,
-            "total": deleted_microsoft + deleted_temp,
+            "generic": deleted_generic,
+            "total": deleted_microsoft + deleted_temp + deleted_generic,
         },
         "accounts": [acc.public() for acc in accounts.values()],
         "addresses": [addr.public() for addr in addresses.values()],
+        "generic_accounts": [acc.public() for acc in generic_accounts.values()],
     }
 
 
@@ -8448,6 +9213,13 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_json({"success": False, "error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
             return
+        if parsed_client.path == "/client-api/generic-accounts":
+            try:
+                accounts = load_generic_accounts(workspace_file(self.workspace_id(), "generic_accounts.json"))
+                self.send_json({"accounts": [acc.public() for acc in accounts.values()]})
+            except Exception as exc:
+                self.send_json({"success": False, "error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
+            return
         if parsed_client.path == "/client-api/refresh-results":
             try:
                 results = load_refresh_results(workspace_file(self.workspace_id(), "refresh_results.json"))
@@ -8465,6 +9237,10 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/temp-addresses":
                 addresses = load_temp_addresses()
                 self.send_json({"addresses": [addr.public() for addr in addresses.values()]})
+                return
+            if parsed.path == "/api/generic-accounts":
+                accounts = load_generic_accounts()
+                self.send_json({"accounts": [acc.public() for acc in accounts.values()]})
                 return
             if parsed.path == "/api/refresh-results":
                 results = load_refresh_results()
@@ -8626,6 +9402,16 @@ class Handler(BaseHTTPRequestHandler):
                     "success": False,
                     "error": str(exc)[:500],
                     "error_code": "temp_import_failed",
+                }, status=HTTPStatus.BAD_REQUEST)
+            return
+        if self.path == "/client-api/generic-accounts/import":
+            try:
+                self.send_json(import_generic_accounts(self.read_json(), self.workspace_id()))
+            except Exception as exc:
+                self.send_json({
+                    "success": False,
+                    "error": str(exc)[:500],
+                    "error_code": "generic_import_failed",
                 }, status=HTTPStatus.BAD_REQUEST)
             return
         if self.path == "/client-api/accounts/delete":
@@ -8800,15 +9586,44 @@ class Handler(BaseHTTPRequestHandler):
                 "addresses": [addr.public() for addr in addresses.values()],
             })
             return
+        if self.path == "/api/generic-accounts/import":
+            payload = self.read_json()
+            incoming, errors = parse_generic_account_lines(str(payload.get("text", "")))
+            accounts = load_generic_accounts()
+            imported = 0
+            skipped = 0
+            updated = 0
+            replace_existing = bool(payload.get("replace_existing") or payload.get("replaceExisting"))
+            for account in incoming:
+                key = account.email.lower()
+                if key in accounts:
+                    if not replace_existing:
+                        skipped += 1
+                        continue
+                    account.created_at = accounts[key].created_at
+                    updated += 1
+                else:
+                    imported += 1
+                accounts[key] = normalize_generic_account(account)
+            save_generic_accounts(accounts)
+            self.send_json({
+                "imported": imported,
+                "skipped": skipped,
+                "updated": updated,
+                "errors": errors,
+                "accounts": [acc.public() for acc in accounts.values()],
+            })
+            return
         if self.path == "/api/fetch":
             payload = self.read_json()
             accounts = load_accounts()
             temp_addresses = load_temp_addresses()
+            generic_accounts = load_generic_accounts()
             selected = [email.lower() for email in payload.get("emails", []) if isinstance(email, str)]
             provider = str(payload.get("provider", "auto"))
             sender_filter = str(payload.get("sender_filter", "")).strip()
             limit = max(1, min(int(payload.get("limit", 8)), 30))
-            source = str(payload.get("source", "microsoft"))
+            source = str(payload.get("source", "microsoft")).lower()
             targets = [
                 account for key, account in accounts.items()
                 if not selected or key in selected
@@ -8817,11 +9632,17 @@ class Handler(BaseHTTPRequestHandler):
                 address for key, address in temp_addresses.items()
                 if not selected or key in selected
             ]
-            jobs: list[tuple[str, MailAccount | TempAddress, str, int, str]] = []
+            generic_targets = [
+                account for key, account in generic_accounts.items()
+                if not selected or key in selected
+            ]
+            jobs: list[tuple[str, MailAccount | TempAddress | GenericMailAccount, str, int, str]] = []
             if source in {"microsoft", "all"}:
                 jobs.extend(("microsoft", account, provider, limit, sender_filter) for account in targets)
             if source in {"temp", "all"}:
                 jobs.extend(("temp", address, provider, limit, sender_filter) for address in temp_targets)
+            if source in {"generic", "all"}:
+                jobs.extend(("generic", account, provider, limit, sender_filter) for account in generic_targets)
             results = run_mail_fetch_jobs(jobs)
             messages = [message for result in results for message in result.get("messages", [])]
             failed_results = [result for result in results if not result.get("ok")]
@@ -8829,6 +9650,7 @@ class Handler(BaseHTTPRequestHandler):
             upsert_messages(messages, workspace_file(self.workspace_id(), "messages.json"))
             save_accounts(accounts)
             save_temp_addresses(temp_addresses)
+            save_generic_accounts(generic_accounts)
             self.send_json(lightweight_fetch_result({
                 "results": results,
                 "summary": {
@@ -8862,6 +9684,15 @@ class Handler(BaseHTTPRequestHandler):
                 addresses.pop(email_addr, None)
             save_temp_addresses(addresses)
             self.send_json({"deleted": len(emails), "addresses": [addr.public() for addr in addresses.values()]})
+            return
+        if self.path == "/api/generic-accounts/delete":
+            payload = self.read_json()
+            emails = [email.lower() for email in payload.get("emails", []) if isinstance(email, str)]
+            accounts = load_generic_accounts()
+            for email_addr in emails:
+                accounts.pop(email_addr, None)
+            save_generic_accounts(accounts)
+            self.send_json({"deleted": len(emails), "accounts": [acc.public() for acc in accounts.values()]})
             return
         if self.path == "/api/messages/search":
             payload = self.read_json()

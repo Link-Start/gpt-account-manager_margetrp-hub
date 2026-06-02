@@ -8,6 +8,7 @@ const STORAGE_KEYS = {
 const SERVICE_LABELS = {
   microsoft: "Outlook",
   temp: "临时邮箱",
+  generic: "普通邮箱",
 };
 
 const els = {
@@ -15,11 +16,13 @@ const els = {
   sideTotal: document.querySelector("#sideTotal"),
   sideMicrosoft: document.querySelector("#sideMicrosoft"),
   sideTemp: document.querySelector("#sideTemp"),
+  sideGeneric: document.querySelector("#sideGeneric"),
   sideError: document.querySelector("#sideError"),
   sideBanned: document.querySelector("#sideBanned"),
   statTotal: document.querySelector("#statTotal"),
   statMicrosoft: document.querySelector("#statMicrosoft"),
   statTemp: document.querySelector("#statTemp"),
+  statGeneric: document.querySelector("#statGeneric"),
   searchInput: document.querySelector("#mailboxSearchInput"),
   sourceFilter: document.querySelector("#mailboxSourceFilter"),
   groupFilter: document.querySelector("#mailboxGroupFilter"),
@@ -168,6 +171,41 @@ function normalizeTempWorkerUrl(value) {
   return String(value || "").trim().replace(/\/+$/, "");
 }
 
+function normalizeGenericMode(value) {
+  const text = String(value || "auto").trim().toLowerCase().replace("_", "-");
+  const aliases = {
+    pop: "pop3",
+    "mail-pop": "pop3",
+    "mail-pop3": "pop3",
+    "mail-imap": "imap",
+    "cloud-mail": "cloudmail",
+    skymail: "cloudmail",
+    "luck-mail": "luckmail",
+    "luckmail-api": "luckmail",
+    luckyous: "luckmail",
+  };
+  const normalized = aliases[text] || text;
+  return ["auto", "imap", "pop3", "cloudmail", "luckmail", "inbucket"].includes(normalized) ? normalized : "auto";
+}
+
+function isGenericApiMode(value) {
+  return ["cloudmail", "luckmail", "inbucket"].includes(normalizeGenericMode(value));
+}
+
+function genericAccountPayload(account) {
+  return {
+    email: account.email,
+    password: account.password || account.token || "",
+    username: account.username || "",
+    mode: normalizeGenericMode(account.mode || account.provider),
+    imap_host: account.imap_host || account.imapHost || account.base_url || account.baseUrl || "",
+    imap_port: Number(account.imap_port || account.imapPort || 993),
+    pop3_host: account.pop3_host || account.pop3Host || "",
+    pop3_port: Number(account.pop3_port || account.pop3Port || 995),
+    category: account.category || account.label || "",
+  };
+}
+
 function normalizeStoredCategories(value) {
   const rows = Array.isArray(value) ? value : [];
   return [...new Set(rows.map((item) => String(item || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
@@ -213,7 +251,28 @@ function normalizeStoredAccount(account) {
   if (!account || typeof account !== "object") return null;
   const email = String(account.email || "").trim();
   if (!email.includes("@")) return null;
-  const source = account.source === "temp" || String(account.id || "").startsWith("temp:") ? "temp" : "microsoft";
+  const source = account.source === "generic" || String(account.id || "").startsWith("generic:")
+    ? "generic"
+    : account.source === "temp" || String(account.id || "").startsWith("temp:")
+      ? "temp"
+      : "microsoft";
+  if (source === "generic") {
+    const payload = genericAccountPayload({ ...account, email });
+    return {
+      ...account,
+      ...payload,
+      id: `generic:${email.toLowerCase()}`,
+      source: "generic",
+      service: SERVICE_LABELS.generic,
+      email,
+      jwt: "",
+      client_id: "",
+      refresh_token: "",
+      site_password: "",
+      category: String(payload.category || account.category || account.label || "").trim(),
+      selected: account.selected !== false,
+    };
+  }
   if (source === "temp") {
     return {
       ...account,
@@ -260,6 +319,28 @@ function normalizeServerMailbox(item, source) {
   const email = String(item?.email || "").trim();
   if (!email.includes("@")) return null;
   const category = String(item?.label || item?.category || "").trim();
+  if (source === "generic") {
+    return normalizeStoredAccount({
+      id: `generic:${email.toLowerCase()}`,
+      source: "generic",
+      email,
+      password: item?.password || item?.token || "",
+      username: item?.username || item?.user || "",
+      mode: item?.mode || item?.provider || "auto",
+      imap_host: item?.imap_host || item?.imapHost || item?.base_url || item?.baseUrl || "",
+      imap_port: item?.imap_port || item?.imapPort || 993,
+      pop3_host: item?.pop3_host || item?.pop3Host || "",
+      pop3_port: item?.pop3_port || item?.pop3Port || 995,
+      category,
+      created_at: item?.created_at || "",
+      updated_at: item?.updated_at || "",
+      last_status: item?.last_status || "",
+      last_error_label: item?.last_error_label || "",
+      last_error_code: item?.last_error_code || "",
+      last_error_hint: item?.last_error_hint || "",
+      last_message_count: item?.last_message_count || 0,
+    });
+  }
   if (source === "temp") {
     return normalizeStoredAccount({
       id: `temp:${email.toLowerCase()}`,
@@ -315,11 +396,19 @@ function ensureCategory(name) {
 
 function accountMissingCredential(account) {
   if (account.source === "temp") return !usableSecret(account.jwt);
+  if (account.source === "generic") return !usableSecret(account.password);
   return !usableSecret(account.client_id) || !usableSecret(account.refresh_token);
 }
 
 function accountKindLabel(account) {
   if (account.source === "temp") return "JWT";
+  if (account.source === "generic") {
+    const mode = normalizeGenericMode(account.mode);
+    if (isGenericApiMode(mode)) return `${mode} API`;
+    if (mode === "pop3") return "POP3";
+    if (mode === "imap") return "IMAP";
+    return "IMAP/POP3";
+  }
   return usableSecret(account.password) ? "Graph+IMAP+密码" : "Graph/IMAP";
 }
 
@@ -416,8 +505,24 @@ function structuredRowsFromObjects(items, source) {
       return;
     }
     const hasMicrosoft = pickValue(item, ["client_id", "clientId"]) || pickValue(item, ["refresh_token", "refreshToken"]);
-    const rowSource = source === "auto" ? (hasMicrosoft ? "microsoft" : "temp") : source;
+    const hasTempJwt = looksLikeJwt(pickValue(item, ["jwt", "token", "access_token", "credential"]));
+    const rowSource = source === "auto" ? (hasMicrosoft ? "microsoft" : (hasTempJwt ? "temp" : "generic")) : source;
     const category = pickValue(item, ["category", "label", "group", "tag"]);
+    if (rowSource === "generic") {
+      rows.push(normalizeStoredAccount({
+        source: "generic",
+        email,
+        password: pickValue(item, ["password", "pass", "token", "app_password", "appPassword"]),
+        username: pickValue(item, ["username", "user", "mailbox"]),
+        mode: pickValue(item, ["mode", "provider", "type"]),
+        imap_host: pickValue(item, ["imap_host", "imapHost", "base_url", "baseUrl", "api_url", "apiUrl", "host"]),
+        imap_port: pickValue(item, ["imap_port", "imapPort", "port"]),
+        pop3_host: pickValue(item, ["pop3_host", "pop3Host"]),
+        pop3_port: pickValue(item, ["pop3_port", "pop3Port"]),
+        category,
+      }));
+      return;
+    }
     rows.push(rowSource === "temp" ? normalizeStoredAccount({
       source: "temp",
       email,
@@ -435,6 +540,42 @@ function structuredRowsFromObjects(items, source) {
     }));
   });
   return { rows: rows.filter(Boolean), errors };
+}
+
+function parseGenericParts(parts, email) {
+  const password = parts[1] || "";
+  const third = parts[2] || "";
+  const fourth = parts[3] || "";
+  const fifth = parts[4] || "";
+  const sixth = parts[5] || "";
+  let mode = normalizeGenericMode(fourth && !/^\d+$/.test(fourth) ? fourth : fifth);
+  let host = third && !/^\d+$/.test(third) ? third : "";
+  let category = "";
+  let username = "";
+  if (mode === "auto" && isGenericApiMode(third)) {
+    mode = normalizeGenericMode(third);
+    host = "";
+  }
+  if (/^\d+$/.test(fourth)) {
+    category = isGenericApiMode(fifth) ? sixth : fifth;
+  } else if (isGenericApiMode(mode)) {
+    username = mode === "luckmail" ? fifth : "";
+    category = mode === "luckmail" ? sixth : fifth;
+  } else {
+    category = fifth;
+  }
+  return normalizeStoredAccount({
+    source: "generic",
+    email,
+    password,
+    username,
+    mode,
+    imap_host: mode === "pop3" ? "" : host,
+    imap_port: /^\d+$/.test(fourth) ? Number(fourth) : 993,
+    pop3_host: mode === "pop3" ? host : "",
+    pop3_port: /^\d+$/.test(fourth) ? Number(fourth) : 995,
+    category,
+  });
 }
 
 function parseLines(text, source) {
@@ -457,7 +598,11 @@ function parseLines(text, source) {
       && !looksLikeUrl(parts[2])
       && !looksLikeJwt(parts[1])
       && String(parts[3] || "").length > 20;
-    const rowSource = source === "auto" ? (looksMicrosoft ? "microsoft" : "temp") : source;
+    const rowSource = source === "auto" ? (looksMicrosoft ? "microsoft" : (looksLikeJwt(parts[1]) ? "temp" : "generic")) : source;
+    if (rowSource === "generic") {
+      rows.push(parseGenericParts(parts, email));
+      return;
+    }
     rows.push(rowSource === "temp" ? normalizeStoredAccount({
       source: "temp",
       email,
@@ -492,6 +637,12 @@ function upsertAccounts(incoming) {
         refresh_token: preferRealSecret(account.refresh_token, existing.refresh_token),
         jwt: preferRealSecret(account.jwt, existing.jwt),
         site_password: preferRealSecret(account.site_password, existing.site_password),
+        username: account.username || existing.username || "",
+        mode: account.mode || existing.mode || "auto",
+        imap_host: account.imap_host || existing.imap_host || "",
+        imap_port: account.imap_port || existing.imap_port || 993,
+        pop3_host: account.pop3_host || existing.pop3_host || "",
+        pop3_port: account.pop3_port || existing.pop3_port || 995,
         category: account.category || existing.category || "",
         updated_at: new Date().toISOString(),
       });
@@ -520,6 +671,12 @@ function mergeServerAccounts(items) {
         refresh_token: preferRealSecret(item.refresh_token, existing.refresh_token),
         jwt: preferRealSecret(item.jwt, existing.jwt),
         site_password: preferRealSecret(item.site_password, existing.site_password),
+        username: item.username || existing.username || "",
+        mode: item.mode || existing.mode || "auto",
+        imap_host: item.imap_host || existing.imap_host || "",
+        imap_port: item.imap_port || existing.imap_port || 993,
+        pop3_host: item.pop3_host || existing.pop3_host || "",
+        pop3_port: item.pop3_port || existing.pop3_port || 995,
         category: item.category || existing.category || "",
       });
     } else {
@@ -543,6 +700,7 @@ function filteredAccounts() {
   return state.accounts.filter((account) => {
     if (source === "microsoft" && account.source !== "microsoft") return false;
     if (source === "temp" && account.source !== "temp") return false;
+    if (source === "generic" && account.source !== "generic") return false;
     if (source === "error" && !accountHasError(account)) return false;
     if (source === "banned" && !accountIsBanned(account)) return false;
     if (group !== "all" && (account.category || "") !== group) return false;
@@ -568,16 +726,19 @@ function renderStats(rows) {
   const total = state.accounts.length;
   const microsoft = state.accounts.filter((account) => account.source === "microsoft").length;
   const temp = state.accounts.filter((account) => account.source === "temp").length;
+  const generic = state.accounts.filter((account) => account.source === "generic").length;
   const error = state.accounts.filter(accountHasError).length;
   const banned = state.accounts.filter(accountIsBanned).length;
   els.sideTotal.textContent = total;
   els.sideMicrosoft.textContent = microsoft;
   els.sideTemp.textContent = temp;
+  if (els.sideGeneric) els.sideGeneric.textContent = generic;
   if (els.sideError) els.sideError.textContent = error;
   if (els.sideBanned) els.sideBanned.textContent = banned;
   els.statTotal.textContent = total;
   els.statMicrosoft.textContent = microsoft;
   els.statTemp.textContent = temp;
+  if (els.statGeneric) els.statGeneric.textContent = generic;
   els.pageSummary.textContent = `${rows.length} 条 / 共 ${total} 条`;
 }
 
@@ -601,9 +762,14 @@ function renderTable() {
     els.tableBody.innerHTML = visible.map((account, index) => {
       const selected = state.selected.has(account.id);
       const hasError = accountHasError(account);
-      const tokenValue = account.source === "temp" ? account.jwt : account.refresh_token;
+      const tokenValue = account.source === "temp"
+        ? account.jwt
+        : account.source === "generic"
+          ? account.imap_host || account.pop3_host || account.mode
+          : account.refresh_token;
       const passwordValue = account.source === "temp" ? account.site_password : account.password;
       const group = account.category || "未分组";
+      const badgeClass = account.source === "microsoft" ? "ms" : account.source === "generic" ? "generic" : "temp";
       return `
         <tr data-id="${escapeHtml(account.id)}" class="${hasError ? "has-mail-error" : ""}">
           <td><input class="mailbox-row-check" type="checkbox" ${selected ? "checked" : ""} aria-label="选择 ${escapeHtml(account.email)}"></td>
@@ -611,10 +777,10 @@ function renderTable() {
           <td>
             <strong class="mailbox-email">${escapeHtml(account.email)}${hasError ? `<em>（错误）</em>` : ""}</strong>
           </td>
-          <td>${secretPreview(passwordValue, account.source === "temp" ? "无站点密钥" : "未保存密码")}</td>
+          <td>${secretPreview(passwordValue, account.source === "temp" ? "无站点密钥" : "未保存密码/令牌")}</td>
           <td><span class="mailbox-group-pill">${escapeHtml(group)}</span></td>
-          <td>${secretPreview(tokenValue, "缺少令牌")}</td>
-          <td><span class="source-badge ${account.source === "microsoft" ? "ms" : "temp"}">${escapeHtml(accountKindLabel(account))}</span></td>
+          <td>${secretPreview(tokenValue, account.source === "generic" ? "缺少主机/模式" : "缺少令牌")}</td>
+          <td><span class="source-badge ${badgeClass}">${escapeHtml(accountKindLabel(account))}</span></td>
           <td class="mailbox-row-actions">
             <button type="button" data-action="copy">复制</button>
             <button class="danger" type="button" data-action="delete">删除</button>
@@ -643,6 +809,12 @@ function renderAll() {
 function mailboxCopyLine(account) {
   if (account.source === "temp") {
     return [account.email, account.jwt || "", account.base_url || "", account.site_password || "", account.category || ""].join("----");
+  }
+  if (account.source === "generic") {
+    const mode = normalizeGenericMode(account.mode);
+    const host = mode === "pop3" ? account.pop3_host || "" : account.imap_host || "";
+    const port = mode === "pop3" ? account.pop3_port || "" : account.imap_port || "";
+    return [account.email, account.password || "", host, port, mode || "auto", account.category || ""].join("----");
   }
   return [account.email, account.password || "", account.client_id || "", account.refresh_token || "", account.category || ""].join("----");
 }
@@ -681,19 +853,23 @@ function exportableRows() {
 async function syncMailboxes({ quiet = false } = {}) {
   try {
     setStatus("正在同步工作空间邮箱。");
-    const [accountsResponse, tempResponse] = await Promise.all([
+    const [accountsResponse, tempResponse, genericResponse] = await Promise.all([
       fetch("/client-api/accounts", { headers: apiHeaders(), cache: "no-store" }),
       fetch("/client-api/temp-addresses", { headers: apiHeaders(), cache: "no-store" }),
+      fetch("/client-api/generic-accounts", { headers: apiHeaders(), cache: "no-store" }),
     ]);
-    const [accountsData, tempData] = await Promise.all([
+    const [accountsData, tempData, genericData] = await Promise.all([
       readJsonResponse(accountsResponse, "/client-api/accounts"),
       readJsonResponse(tempResponse, "/client-api/temp-addresses"),
+      readJsonResponse(genericResponse, "/client-api/generic-accounts"),
     ]);
     if (!accountsResponse.ok) throw new Error(accountsData.error || "Outlook 邮箱同步失败");
     if (!tempResponse.ok) throw new Error(tempData.error || "临时邮箱同步失败");
+    if (!genericResponse.ok) throw new Error(genericData.error || "普通邮箱同步失败");
     const rows = [
       ...(accountsData.accounts || []).map((item) => normalizeServerMailbox(item, "microsoft")).filter(Boolean),
       ...(tempData.addresses || []).map((item) => normalizeServerMailbox(item, "temp")).filter(Boolean),
+      ...(genericData.accounts || []).map((item) => normalizeServerMailbox(item, "generic")).filter(Boolean),
     ];
     mergeServerAccounts(rows);
     setStatus(`已同步 ${rows.length} 个邮箱。`, "ok");
@@ -709,6 +885,7 @@ async function syncMailboxes({ quiet = false } = {}) {
 async function persistImportedRows(rows) {
   const microsoftRows = rows.filter((row) => row.source === "microsoft");
   const tempRows = rows.filter((row) => row.source === "temp");
+  const genericRows = rows.filter((row) => row.source === "generic");
   const results = [];
   if (microsoftRows.length) {
     const response = await fetch("/client-api/accounts/import-pickup", {
@@ -734,6 +911,16 @@ async function persistImportedRows(rows) {
     if (!response.ok) throw new Error(data.error || "临时邮箱导入失败");
     results.push(data);
   }
+  if (genericRows.length) {
+    const response = await fetch("/client-api/generic-accounts/import", {
+      method: "POST",
+      headers: apiHeaders(),
+      body: JSON.stringify({ text: genericRows.map(mailboxCopyLine).join("\n") }),
+    });
+    const data = await readJsonResponse(response, "/client-api/generic-accounts/import");
+    if (!response.ok) throw new Error(data.error || "普通邮箱导入失败");
+    results.push(data);
+  }
   return results;
 }
 
@@ -751,11 +938,13 @@ function updateImportPreview() {
   const { rows, errors } = parseLines(text, source);
   const microsoft = rows.filter((row) => row.source === "microsoft").length;
   const temp = rows.filter((row) => row.source === "temp").length;
+  const generic = rows.filter((row) => row.source === "generic").length;
   els.importPreview.className = `import-preview ${errors.length ? "warning" : "ok"}`;
   els.importPreview.textContent = [
     `识别 ${rows.length} 个邮箱`,
     microsoft ? `Outlook ${microsoft}` : "",
     temp ? `临时邮箱 ${temp}` : "",
+    generic ? `普通邮箱 ${generic}` : "",
     errors.length ? `格式错误 ${errors.length}` : "",
   ].filter(Boolean).join(" · ") || "没有识别到邮箱。";
 }
@@ -901,7 +1090,7 @@ els.importModal.addEventListener("click", (event) => {
 els.sideFilters.forEach((button) => {
   button.addEventListener("click", () => {
     state.sourceView = button.dataset.managerFilter || "all";
-    els.sourceFilter.value = ["all", "microsoft", "temp"].includes(state.sourceView) ? state.sourceView : "all";
+    els.sourceFilter.value = ["all", "microsoft", "temp", "generic"].includes(state.sourceView) ? state.sourceView : "all";
     state.page = 1;
     renderAll();
   });
