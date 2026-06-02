@@ -336,6 +336,14 @@ a {
   gap: 8px;
 }
 
+.panel-head.compact.mailbox-title-head {
+  display: grid;
+  grid-template-columns: 1fr;
+  row-gap: 8px;
+  align-items: stretch;
+  justify-content: stretch;
+}
+
 .panel-head.compact > div:first-child {
   flex: 1 1 auto;
 }
@@ -535,6 +543,55 @@ button:disabled {
 .mailbox-head-counts strong {
   color: var(--accent);
   font-size: 11px;
+}
+
+.mailbox-source-filter {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.mailbox-source-filter button {
+  min-width: 0;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.68);
+  color: #60708a;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.mailbox-source-filter button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mailbox-source-filter button.active {
+  border-color: rgba(47, 117, 255, 0.38);
+  background: rgba(47, 117, 255, 0.1);
+  color: #315a9d;
+}
+
+.mailbox-source-filter strong {
+  min-width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(47, 117, 255, 0.12);
+  color: var(--accent);
+  font-size: 10.5px;
+  line-height: 1;
 }
 
 .mailbox-counts {
@@ -1295,39 +1352,6 @@ button:disabled {
   color: #58708a;
   font-size: 11px;
   line-height: 1.25;
-}
-
-.manual-oauth-panel {
-  border: 1px solid rgba(142, 165, 199, 0.24);
-  border-radius: 8px;
-  padding: 7px 9px;
-  background: rgba(255, 255, 255, 0.56);
-}
-
-.manual-oauth-panel summary {
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 800;
-  color: #25405f;
-}
-
-.manual-oauth-grid {
-  display: grid;
-  grid-template-columns: auto minmax(240px, 1fr) auto;
-  gap: 6px;
-  align-items: center;
-  margin-top: 7px;
-}
-
-.manual-oauth-grid textarea {
-  grid-column: 1 / -2;
-  min-height: 42px;
-  resize: vertical;
-}
-
-.manual-oauth-grid button {
-  min-height: 30px;
-  padding: 5px 8px;
 }
 
 .refresh-console .login-stats {
@@ -2320,6 +2344,7 @@ button:disabled {
   overflow: auto;
   display: flex;
   flex-direction: column;
+  gap: 8px;
   animation: softReveal 180ms var(--ease);
 }
 
@@ -2415,9 +2440,9 @@ button:disabled {
 
 .mail-html-frame {
   width: 100%;
-  flex: 0 0 auto;
-  min-height: 96px;
-  max-height: 520px;
+  flex: 1 1 auto;
+  min-height: 420px;
+  max-height: none;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: #fff;

@@ -4,7 +4,17 @@
 
 仓库地址：<https://github.com/margetrp-hub/gpt-account-manager>
 
-交流群：QQ 群 `260789529`，欢迎大家进群交流项目使用、部署和问题反馈。
+交流群：QQ 群 `260789529`，欢迎大家进群交流项目使用、部署、邮箱通道和问题反馈。
+
+![AI 分享群 QQ 群二维码](docs/images/qq-group-qrcode.jpg)
+
+## 0.8.4 更新重点
+
+- 修复导入弹窗的服务类型示例：选择临时邮箱时只显示 `邮箱----JWT` / `邮箱----JWT----分组`，不再混入 Outlook 四段格式。
+- “其他邮箱”入口补充 163、QQ、iCloud、Gmail、Yahoo 等 IMAP / POP3 示例，首页、邮箱管理、刷新页和仪表盘的命名保持一致。
+- 邮箱管理页的导入说明会跟随当前选择动态切换，避免把临时邮箱、Outlook 和其他邮箱格式混在一起。
+- 服务端版本号统一从 `package.json` 读取，静态资源使用当前版本号，减少更新后浏览器继续吃旧缓存的情况。
+- 保留仪表盘、封禁邮件统计、工作区缓存、Docker Compose 部署和同步升级能力，后续继续围绕邮箱通道和 CPA 巡检做增强。
 
 我做这个项目，不是为了让管理员先把一堆凭证放到服务器里，然后只给某一个人用。它更像一个批量账号管理工作台：普通用户自己导入邮箱资料，自己收验证码，自己把需要刷新的账号推进队列；管理员只负责站点维护、临时邮箱提取、CPA 仓管和必要的批量整理。
 
@@ -12,13 +22,16 @@
 
 - Outlook / Microsoft Graph + IMAP 邮箱批量导入和取信。
 - 临时邮箱 JWT 批量导入和取信。
+- 其他邮箱 IMAP / POP3 导入和取信：163、QQ、iCloud、Gmail、Yahoo 等，只要资料完整就按同一套邮箱链路处理。
 - 邮件验证码检索、服务端工作区邮件缓存、搜索、复制和本地删除。
 - 账号分组、封禁/异常标记、刷新队列管理。
+- 封禁邮件和异常邮件仪表盘，方便看每天收到多少封禁、风控、验证码和其他提醒。
 - 右上角中英文界面切换，语言选择保存在当前浏览器。
 - CPA / CLIProxyAPI 仓管巡检，识别 RT 失效、会话失效、封禁、风控、额度耗尽、非 OpenAI 凭证等状态。
 - OpenAI OAuth 凭证刷新，并导出 CPA / Sub2API 可用的 auth JSON。
 - 确定失败账号一键清理：从 CPA 和刷新队列移除，不删除邮箱管理里的邮箱资料。
 - 长效手机接码池：手机号和 API URL 绑定到单个账号，遇到手机验证时可以独立取码和留痕。
+- Docker Compose 部署和同步升级入口，方便 VPS 保持持久化数据并稳定更新。
 
 ## 我希望它解决的问题
 
@@ -38,7 +51,7 @@
 - 前端是原生 HTML / CSS / JavaScript，没有前端构建步骤，部署时直接解压即可运行。
 - 浏览器优先保存轻量资料：邮箱资料、分类、忽略列表、CPA 设置默认保存在 `localStorage`；完整邮件正文和 HTML 写入服务端工作区缓存，避免浏览器存储超额。
 - 服务端工作区隔离：普通客户端调用服务端辅助 API 时，会发送浏览器生成的 `ctgptm.workspaceId`，服务端写入 `data/workspaces/<workspace-id>/`。
-- 邮箱链路独立：Microsoft 账号走 Graph / IMAP 取信链路；临时邮箱走 Cloudflare Temp Email Worker 兼容 API。
+- 邮箱链路独立：Microsoft 账号走 Graph / IMAP 取信链路；临时邮箱走 Cloudflare Temp Email Worker 兼容 API；其他邮箱走 IMAP / POP3 配置化取信。
 - CPA 仓管链路独立：通过目标 CPA 管理端点扫描、诊断、删除或替换 auth file，管理密钥不写入本工具服务端文件。
 - OAuth 刷新链路使用后端协议状态机，生成 CPA / Sub2API 可用的 auth JSON；刷新时要求显式填写代理 URL，避免误用 VPS 默认出口。
 - 自检、管理员页和管理员 API 在设置 `MAIL_PICKUP_ADMIN_TOKEN` 后变成私有入口。
@@ -46,7 +59,7 @@
 ## 页面说明
 
 - `/`：账号管理台，导入邮箱、收信、查码、分组、删除本地缓存、推送刷新队列。
-- `/mailboxes.html`：邮箱管理台，集中整理 Outlook 四段和临时邮箱 JWT，支持批量导入、搜索筛选、分组、复制、一行一个邮箱的 TXT 导出、JSON 备份和删除。
+- `/mailboxes.html`：邮箱管理台，集中整理 Outlook 四段、临时邮箱 JWT 和其他邮箱资料，支持批量导入、搜索筛选、分组、复制、一行一个邮箱的 TXT 导出、JSON 备份和删除。
 - `/refresh.html`：凭证刷新队列，处理邮箱登录账号、CPA 同步、auth JSON 导出。
 - `/warehouse.html`：CPA 仓管，扫描异常账号、删除失效 auth、查看诊断原因。
 - `/converter.html`：本地 Session / auth JSON 转换工具。

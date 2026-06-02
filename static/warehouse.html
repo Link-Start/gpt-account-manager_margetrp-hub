@@ -806,12 +806,6 @@
         color: var(--text);
       }
 
-      .repair-session {
-        min-height: 150px;
-        font-family: var(--mono);
-        font-size: 0.82rem;
-      }
-
       .login-progress {
         display: grid;
         gap: 6px;
@@ -1003,9 +997,9 @@
         padding: 4px 8px !important;
       }
     </style>
-    <link rel="stylesheet" href="/forge-theme.css?v=20260531-open-source-links" />
-  <script src="/nav-links.js?v=20260531-docker-dns-links" defer></script>
-  <script src="/i18n.js?v=20260603-dashboard-insights" defer></script>
+    <link rel="stylesheet" href="/forge-theme.css?v={{APP_VERSION}}" />
+  <script src="/nav-links.js?v={{APP_VERSION}}" defer></script>
+  <script src="/i18n.js?v={{APP_VERSION}}" defer></script>
 </head>
   <body>
     <main class="app">
@@ -1174,14 +1168,8 @@
                   </div>
                 </div>
                 <div class="repair-card repair-card-wide">
-                  <strong>手动 Session 兜底</strong>
-                  <textarea class="repair-session" id="repair-session-json" spellcheck="false" placeholder='粘贴 https://chatgpt.com/api/auth/session 返回的 JSON'></textarea>
-                  <div class="repair-actions">
-                    <button class="button button-secondary" id="convert-repair-session" type="button">转换预览</button>
-                    <button class="button button-primary" id="replace-repair-auth" type="button">上传修复</button>
-                    <button class="button button-secondary" id="open-chatgpt-session" type="button">打开 Session</button>
-                  </div>
-                  <div class="status-line" id="repair-status">等待新的 Session JSON。</div>
+                  <strong>协议登录</strong>
+                  <div class="status-line" id="repair-status">选择 401 凭证后，可加入刷新队列统一执行协议登录。</div>
                 </div>
               </div>
             </section>
@@ -1266,7 +1254,6 @@
           workspaceTempAddresses: [],
           selectedRows: new Set(),
           repairRow: undefined,
-          convertedAuth: undefined,
         };
 
         const elements = {
@@ -1294,7 +1281,6 @@
           selectAllRows: document.querySelector("#select-all-rows"),
           repair401: document.querySelector("#repair-401"),
           closeRepair: document.querySelector("#close-repair"),
-          convertRepairSession: document.querySelector("#convert-repair-session"),
           copyRepairEmail: document.querySelector("#copy-repair-email"),
           fetchRepairMail: document.querySelector("#fetch-repair-mail"),
           jobLogList: document.querySelector("#job-log-list"),
@@ -1302,15 +1288,12 @@
           loginProgressBar: document.querySelector("#login-progress-bar"),
           loginProgressText: document.querySelector("#login-progress-text"),
           openChatgptLogin: document.querySelector("#open-chatgpt-login"),
-          openChatgptSession: document.querySelector("#open-chatgpt-session"),
           repairEmail: document.querySelector("#repair-email"),
           repairLoginPassword: document.querySelector("#repair-login-password"),
           repairMailStatus: document.querySelector("#repair-mail-status"),
           repairPanel: document.querySelector("#repair-panel"),
-          repairSessionJson: document.querySelector("#repair-session-json"),
           repairStatus: document.querySelector("#repair-status"),
           repairTitle: document.querySelector("#repair-title"),
-          replaceRepairAuth: document.querySelector("#replace-repair-auth"),
           scan401: document.querySelector("#scan-401"),
           startAutoLogin: document.querySelector("#start-auto-login"),
           stat401: document.querySelector("#stat-401"),
@@ -1455,24 +1438,6 @@
           };
         }
 
-        function tryParseJwtPayload(token) {
-          try {
-            const part = String(token || "").split(".")[1];
-            if (!part) return {};
-            const normalized = part.replace(/-/g, "+").replace(/_/g, "/");
-            const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
-            return JSON.parse(atob(padded));
-          } catch {
-            return {};
-          }
-        }
-
-        function normalizeTimestamp(value) {
-          if (!value) return "";
-          const date = value instanceof Date ? value : new Date(value);
-          return Number.isNaN(date.getTime()) ? "" : date.toISOString();
-        }
-
         function epochSecondsFromValue(value) {
           if (value === undefined || value === null || value === "") return undefined;
           const numeric = Number(value);
@@ -1481,87 +1446,6 @@
           }
           const parsed = Date.parse(String(value));
           return Number.isFinite(parsed) ? Math.trunc(parsed / 1000) : undefined;
-        }
-
-        function buildSyntheticIdToken(email, accountId, planType, expiresAt) {
-          const encode = (value) => btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-          const now = Math.floor(Date.now() / 1000);
-          const exp = expiresAt ? Math.floor(new Date(expiresAt).getTime() / 1000) : now + 3600;
-          return `${encode({ alg: "none", typ: "JWT", cpa_synthetic: true })}.${encode({
-            iss: "gpt-account-manager",
-            aud: "chatgpt",
-            email,
-            chatgpt_account_id: accountId,
-            account_id: accountId,
-            chatgpt_plan_type: planType,
-            iat: now,
-            exp: Number.isFinite(exp) ? exp : now + 3600,
-          })}.synthetic`;
-        }
-
-        function sessionToCpaAuth(session) {
-          const accessToken = firstNonEmpty(
-            session.accessToken,
-            session.access_token,
-            session.tokens?.accessToken,
-            session.tokens?.access_token,
-            session.token?.accessToken,
-            session.token?.access_token,
-            session.credentials?.access_token,
-          );
-          if (!accessToken) {
-            throw new Error("Session JSON 缺少 accessToken");
-          }
-          const sessionToken = firstNonEmpty(session.sessionToken, session.session_token, session.tokens?.sessionToken, session.tokens?.session_token);
-          const refreshToken = firstNonEmpty(session.refreshToken, session.refresh_token, session.tokens?.refreshToken, session.tokens?.refresh_token);
-          const inputIdToken = firstNonEmpty(session.idToken, session.id_token, session.tokens?.idToken, session.tokens?.id_token);
-          const payload = tryParseJwtPayload(accessToken);
-          const idPayload = tryParseJwtPayload(inputIdToken);
-          const auth = payload?.["https://api.openai.com/auth"] || {};
-          const idAuth = idPayload?.["https://api.openai.com/auth"] || {};
-          const profile = payload?.["https://api.openai.com/profile"] || {};
-          const email = firstNonEmpty(
-            session.user?.email,
-            session.email,
-            session.credentials?.email,
-            profile.email,
-            idPayload.email,
-            payload.email,
-            state.repairRow?.email,
-          );
-          const accountId = firstNonEmpty(
-            session.account?.id,
-            session.account_id,
-            session.chatgptAccountId,
-            session.chatgpt_account_id,
-            auth.chatgpt_account_id,
-            idAuth.chatgpt_account_id,
-            state.repairRow?.auth_index,
-          );
-          const planType = firstNonEmpty(session.account?.planType, session.planType, session.plan_type, auth.chatgpt_plan_type, idAuth.chatgpt_plan_type);
-          const expiresAt = firstNonEmpty(
-            payload.exp ? normalizeTimestamp(payload.exp * 1000) : "",
-            normalizeTimestamp(session.expires),
-            normalizeTimestamp(session.expiresAt),
-            normalizeTimestamp(session.expires_at),
-          );
-          const idToken = firstNonEmpty(inputIdToken, buildSyntheticIdToken(email, accountId, planType, expiresAt));
-          return Object.fromEntries(Object.entries({
-            type: "codex",
-            account_id: accountId,
-            chatgpt_account_id: accountId,
-            email,
-            name: firstNonEmpty(email, state.repairRow?.name, "ChatGPT Account"),
-            plan_type: planType,
-            chatgpt_plan_type: planType,
-            id_token: idToken,
-            id_token_synthetic: inputIdToken ? undefined : true,
-            access_token: accessToken,
-            refresh_token: refreshToken || "",
-            session_token: sessionToken,
-            last_refresh: normalizeTimestamp(new Date()),
-            expired: expiresAt,
-          }).filter(([, value]) => value !== undefined && value !== null && value !== ""));
         }
 
         function addLog(message, type = "info") {
@@ -1966,7 +1850,6 @@
 
         function openRepair(row) {
           state.repairRow = row;
-          state.convertedAuth = undefined;
           state.lastJobStatus = "";
           if (state.jobTimer) {
             clearInterval(state.jobTimer);
@@ -1977,7 +1860,6 @@
           elements.repairTitle.textContent = row.name || "401 凭证";
           elements.repairEmail.textContent = email || "-";
           elements.repairLoginPassword.value = localAccount?.password || "";
-          elements.repairSessionJson.value = "";
           elements.jobLogList.innerHTML = '<div class="job-log-item">等待启动兜底授权。</div>';
           elements.loginProgress.hidden = true;
           elements.loginProgressBar.style.width = "0%";
@@ -1991,7 +1873,6 @@
         function closeRepair() {
           elements.repairPanel.hidden = true;
           state.repairRow = undefined;
-          state.convertedAuth = undefined;
           state.lastJobStatus = "";
           if (state.jobTimer) {
             clearInterval(state.jobTimer);
@@ -2228,46 +2109,6 @@
             setStatus(elements.repairMailStatus, error instanceof Error ? error.message : "收取验证码失败", "error");
           } finally {
             setButtonBusy(elements.fetchRepairMail, false);
-          }
-        }
-
-        function convertRepairSession() {
-          try {
-            const session = JSON.parse(elements.repairSessionJson.value || "{}");
-            state.convertedAuth = sessionToCpaAuth(session);
-            setStatus(elements.repairStatus, `已转换：${state.convertedAuth.email || state.convertedAuth.name || "ChatGPT Account"}`, "ok");
-            return state.convertedAuth;
-          } catch (error) {
-            state.convertedAuth = undefined;
-            setStatus(elements.repairStatus, error instanceof Error ? error.message : "Session JSON 解析失败", "error");
-            return undefined;
-          }
-        }
-
-        async function replaceRepairAuth() {
-          const authFile = state.convertedAuth || convertRepairSession();
-          if (!authFile || !state.repairRow) return;
-          const payload = getPayload();
-          if (!validatePayload(payload)) return;
-          setButtonBusy(elements.replaceRepairAuth, true, "上传中...");
-          try {
-            const response = await fetch("/client-api/cpa/replace-auth", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                ...payload,
-                name: state.repairRow.name || authFile.email,
-                auth_file: authFile,
-              }),
-            });
-            const data = await response.json();
-            if (!response.ok || !data.success) throw new Error(data.error || "上传修复失败");
-            setStatus(elements.repairStatus, "已上传新的 auth file。建议再点扫描确认。", "ok");
-            addLog(`已上传修复：${data.result?.name || authFile.email || state.repairRow.name}`, "success");
-          } catch (error) {
-            setStatus(elements.repairStatus, error instanceof Error ? error.message : "上传修复失败", "error");
-          } finally {
-            setButtonBusy(elements.replaceRepairAuth, false);
           }
         }
 
@@ -2642,12 +2483,7 @@
         elements.openChatgptLogin.addEventListener("click", () => {
           window.open("https://chatgpt.com/auth/login", "_blank", "noopener,noreferrer");
         });
-        elements.openChatgptSession.addEventListener("click", () => {
-          window.open("https://chatgpt.com/api/auth/session", "_blank", "noopener,noreferrer");
-        });
         elements.fetchRepairMail.addEventListener("click", fetchRepairMail);
-        elements.convertRepairSession.addEventListener("click", convertRepairSession);
-        elements.replaceRepairAuth.addEventListener("click", replaceRepairAuth);
         elements.startAutoLogin.addEventListener("click", startAutoLogin);
         elements.tableBody.addEventListener("click", (event) => {
           const button = event.target.closest(".repair-row");

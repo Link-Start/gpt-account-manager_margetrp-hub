@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GPT账号管理助手 - 邮箱管理</title>
-  <link rel="stylesheet" href="/styles.css?v=20260603-dashboard-insights">
-  <link rel="stylesheet" href="/forge-theme.css?v=20260531-open-source-links">
-  <script src="/nav-links.js?v=20260531-docker-dns-links" defer></script>
-  <script src="/i18n.js?v=20260603-dashboard-insights" defer></script>
+  <link rel="stylesheet" href="/styles.css?v={{APP_VERSION}}">
+  <link rel="stylesheet" href="/forge-theme.css?v={{APP_VERSION}}">
+  <script src="/nav-links.js?v={{APP_VERSION}}" defer></script>
+  <script src="/i18n.js?v={{APP_VERSION}}" defer></script>
 </head>
 <body>
   <div class="shell mailbox-manager-shell">
@@ -84,7 +84,7 @@
           <strong id="sideTemp">0</strong>
         </button>
         <button class="mailbox-side-link" type="button" data-manager-filter="generic">
-          <span>普通邮箱</span>
+          <span>其他邮箱</span>
           <strong id="sideGeneric">0</strong>
         </button>
         <button class="mailbox-side-link danger" type="button" data-manager-filter="error">
@@ -113,7 +113,7 @@
             <span>总数 <strong id="statTotal">0</strong></span>
             <span>Outlook <strong id="statMicrosoft">0</strong></span>
             <span>临时 <strong id="statTemp">0</strong></span>
-            <span>普通 <strong id="statGeneric">0</strong></span>
+            <span>其他 <strong id="statGeneric">0</strong></span>
           </div>
         </div>
 
@@ -123,7 +123,7 @@
             <option value="all">全部来源</option>
             <option value="microsoft">Outlook</option>
             <option value="temp">临时邮箱</option>
-            <option value="generic">普通邮箱</option>
+            <option value="generic">其他邮箱</option>
           </select>
           <select id="mailboxGroupFilter" aria-label="分组筛选">
             <option value="all">全部分组</option>
@@ -204,7 +204,7 @@
           <option value="auto">自动识别</option>
           <option value="microsoft">Outlook 邮箱</option>
           <option value="temp">临时邮箱</option>
-          <option value="generic">普通邮箱</option>
+          <option value="generic">其他邮箱</option>
         </select>
       </label>
       <label class="modal-field" id="mailboxTempApiField">
@@ -222,7 +222,7 @@
       </label>
       <label class="modal-field">
         <span>邮箱数据</span>
-        <textarea id="mailboxImportText" rows="8" spellcheck="false" placeholder="每行一个邮箱，直接粘贴从邮箱助手或临时邮箱池导出的内容"></textarea>
+        <textarea id="mailboxImportText" rows="8" spellcheck="false" data-i18n-skip="true" placeholder="选择导入类型后显示对应格式"></textarea>
       </label>
       <div id="mailboxImportPreview" class="import-preview">粘贴后会先预检格式。</div>
       <div class="modal-actions">
@@ -232,7 +232,7 @@
     </section>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="/mailboxes.js?v=20260603-generic-mail-provider" defer></script>
+  <script src="/mailboxes.js?v={{APP_VERSION}}" defer></script>
 </body>
 </html>
 

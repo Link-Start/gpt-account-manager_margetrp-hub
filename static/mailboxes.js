@@ -8,7 +8,26 @@ const STORAGE_KEYS = {
 const SERVICE_LABELS = {
   microsoft: "Outlook",
   temp: "临时邮箱",
-  generic: "普通邮箱",
+  generic: "其他邮箱",
+};
+
+const IMPORT_PLACEHOLDERS = {
+  auto: [
+    "user@outlook.com----password----client_id----refresh_token----默认分组",
+    "user@example.com----JWT_TOKEN----默认分组",
+    "user@163.com----授权码或邮箱密码",
+    "user@qq.com----授权码",
+    "user@icloud.com----App 专用密码",
+  ].join("\n"),
+  microsoft: "user@outlook.com----password----client_id----refresh_token----默认分组",
+  temp: "user@example.com----JWT_TOKEN\nuser@example.com----JWT_TOKEN----默认分组",
+  generic: [
+    "user@163.com----授权码或邮箱密码",
+    "user@qq.com----授权码",
+    "user@icloud.com----App 专用密码",
+    "user@gmail.com----App Password",
+    "user@example.com----password----imap.example.com----993----默认分组",
+  ].join("\n"),
 };
 
 const els = {
@@ -865,7 +884,7 @@ async function syncMailboxes({ quiet = false } = {}) {
     ]);
     if (!accountsResponse.ok) throw new Error(accountsData.error || "Outlook 邮箱同步失败");
     if (!tempResponse.ok) throw new Error(tempData.error || "临时邮箱同步失败");
-    if (!genericResponse.ok) throw new Error(genericData.error || "普通邮箱同步失败");
+    if (!genericResponse.ok) throw new Error(genericData.error || "其他邮箱同步失败");
     const rows = [
       ...(accountsData.accounts || []).map((item) => normalizeServerMailbox(item, "microsoft")).filter(Boolean),
       ...(tempData.addresses || []).map((item) => normalizeServerMailbox(item, "temp")).filter(Boolean),
@@ -918,7 +937,7 @@ async function persistImportedRows(rows) {
       body: JSON.stringify({ text: genericRows.map(mailboxCopyLine).join("\n") }),
     });
     const data = await readJsonResponse(response, "/client-api/generic-accounts/import");
-    if (!response.ok) throw new Error(data.error || "普通邮箱导入失败");
+    if (!response.ok) throw new Error(data.error || "其他邮箱导入失败");
     results.push(data);
   }
   return results;
@@ -930,6 +949,8 @@ function updateImportPreview() {
   const tempMode = source === "temp" || source === "auto";
   els.tempApiField.hidden = !tempMode;
   els.tempSitePasswordField.hidden = !tempMode;
+  els.importText.placeholder = IMPORT_PLACEHOLDERS[source] || IMPORT_PLACEHOLDERS.auto;
+  els.importText.dataset.i18nOriginalPlaceholder = els.importText.placeholder;
   if (!text.trim()) {
     els.importPreview.className = "import-preview";
     els.importPreview.textContent = "粘贴后会先预检格式。";
@@ -944,7 +965,7 @@ function updateImportPreview() {
     `识别 ${rows.length} 个邮箱`,
     microsoft ? `Outlook ${microsoft}` : "",
     temp ? `临时邮箱 ${temp}` : "",
-    generic ? `普通邮箱 ${generic}` : "",
+    generic ? `其他邮箱 ${generic}` : "",
     errors.length ? `格式错误 ${errors.length}` : "",
   ].filter(Boolean).join(" · ") || "没有识别到邮箱。";
 }

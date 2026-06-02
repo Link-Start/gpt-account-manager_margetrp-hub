@@ -23,6 +23,19 @@ const TYPE_LABELS = {
   other: "其他",
 };
 
+const SOURCE_FILTER_LABELS = {
+  all: "全部",
+  microsoft: "Outlook",
+  temp: "临时",
+  generic: "其他",
+};
+
+function accountSourceGroup(account) {
+  if (account?.source === "temp") return "temp";
+  if (account?.source === "microsoft") return "microsoft";
+  return "generic";
+}
+
 const EMPTY_CATEGORY_LABEL = "未分组";
 const LEGACY_SEEDED_CATEGORIES = new Set(["默认", "客户", "注册", "账单"]);
 const MOJIBAKE_TEXT_FIXES = new Map([
@@ -51,8 +64,12 @@ const MAIL_SERVICES = {
     label: "自动识别",
     source: "auto",
     tone: "auto",
-    hint: "自动识别 Outlook 四段格式，或临时邮箱两段格式：邮箱----JWT。",
-    placeholder: "user@outlook.com----password----client_id----refresh_token\nuser@example.com----JWT_TOKEN",
+    hint: "自动识别 Outlook 四段、临时邮箱 JWT、其他邮箱密码/授权码或 IMAP/POP3 扩展格式。",
+    placeholder: [
+      "user@outlook.com----password----client_id----refresh_token----默认分组",
+      "user@example.com----JWT_TOKEN----默认分组",
+      "user@163.com----授权码或邮箱密码",
+    ].join("\n"),
   },
   microsoft: {
     label: "Outlook",
@@ -65,15 +82,21 @@ const MAIL_SERVICES = {
     label: "临时邮箱",
     source: "temp",
     tone: "temp",
-    hint: "粘贴格式：邮箱----JWT。也可以写：邮箱----JWT----分组。Temp API 已默认填好。",
-    placeholder: "user@example.com----JWT_TOKEN",
+    hint: "临时邮箱只需要 JWT：邮箱----JWT；可选：邮箱----JWT----分组。Temp API 已默认填好。",
+    placeholder: "user@example.com----JWT_TOKEN\nuser@example.com----JWT_TOKEN----默认分组",
   },
   generic: {
-    label: "普通邮箱",
+    label: "其他邮箱",
     source: "generic",
     tone: "generic",
-    hint: "支持常见 IMAP/POP3 邮箱：邮箱----密码；可选：邮箱----密码----imap.example.com----993----分组。",
-    placeholder: "user@gmail.com----app-password\nuser@example.com----password----imap.example.com----993----分组",
+    hint: "支持 163、QQ、iCloud、Gmail、Yahoo 等 IMAP/POP3 邮箱：邮箱----密码/授权码；可选：邮箱----密码----imap.example.com----993----分组。",
+    placeholder: [
+      "user@163.com----授权码或邮箱密码",
+      "user@qq.com----授权码",
+      "user@icloud.com----App 专用密码",
+      "user@gmail.com----App Password",
+      "user@example.com----password----imap.example.com----993----默认分组",
+    ].join("\n"),
   },
 };
 
@@ -100,7 +123,9 @@ const els = {
   confirmImportBtn: document.querySelector("#confirmImportBtn"),
   tempCount: document.querySelector("#tempCount"),
   msCount: document.querySelector("#msCount"),
+  genericCount: document.querySelector("#genericCount"),
   mailboxTotal: document.querySelector("#mailboxTotal"),
+  mailboxSourceFilter: document.querySelector("#mailboxSourceFilter"),
   addCategoryBtn: document.querySelector("#addCategoryBtn"),
   groupByImportDateBtn: document.querySelector("#groupByImportDateBtn"),
   deleteCategoryBtn: document.querySelector("#deleteCategoryBtn"),
@@ -190,6 +215,7 @@ const state = {
   activeMailboxId: "",
   activeMailboxEmail: "",
   activeImportSource: "",
+  mailboxSourceFilter: "all",
   activeView: "mail",
   loginJobs: new Map(),
   loginPoller: undefined,
@@ -362,13 +388,6 @@ function hasUsableLocalCredentialsForPayload(payload) {
   return selectedAccountsForPayload(payload).some(hasUsableLocalCredential);
 }
 
-function shouldUseServerStoredAccounts(payload) {
-  if (!hasAdminToken()) return false;
-  const selectedAccounts = selectedAccountsForPayload(payload);
-  return selectedAccounts.some(accountHasMaskedCredential)
-    && !selectedAccounts.some(hasUsableLocalCredential);
-}
-
 function normalizeProviderValue(value) {
   const provider = String(value || "auto").toLowerCase();
   return ["auto", "graph", "imap"].includes(provider) ? provider : "auto";
@@ -454,11 +473,11 @@ const MAIL_ERROR_LABELS = {
   temp_invalid_credential: "临时邮箱 JWT 无效",
   temp_config_missing: "临时邮箱配置缺失",
   temp_api_http_error: "临时邮箱 API 异常",
-  generic_config_missing: "普通邮箱配置缺失",
-  generic_auth_failed: "普通邮箱认证失败",
-  generic_imap_failed: "普通邮箱 IMAP 失败",
-  generic_pop3_failed: "普通邮箱 POP3 失败",
-  generic_api_failed: "普通邮箱 API 失败",
+  generic_config_missing: "其他邮箱配置缺失",
+  generic_auth_failed: "其他邮箱认证失败",
+  generic_imap_failed: "其他邮箱 IMAP 失败",
+  generic_pop3_failed: "其他邮箱 POP3 失败",
+  generic_api_failed: "其他邮箱 API 失败",
   outlook_credential_format: "Outlook 凭证格式错误",
   outlook_client_mismatch: "Outlook client_id 不匹配",
   outlook_refresh_expired: "Outlook RT 过期",
@@ -663,7 +682,7 @@ function normalizeStoredAccount(account) {
       ...payload,
       id: `generic:${email.toLowerCase()}`,
       source: "generic",
-      service: "普通邮箱",
+      service: "其他邮箱",
       email,
       token: "",
       client_id: "",
@@ -854,7 +873,7 @@ function normalizeServerMailbox(item, source) {
     return normalizeStoredAccount({
       id: `generic:${email.toLowerCase()}`,
       source: "generic",
-      service: "普通邮箱",
+      service: "其他邮箱",
       email,
       password: String(item?.password || item?.token || ""),
       username: String(item?.username || item?.user || ""),
@@ -985,7 +1004,7 @@ async function syncAccountsFromServer({ silent = false } = {}) {
       throw new Error(tempData.error || tempResponse.statusText || "服务端临时邮箱列表读取失败");
     }
     if (!genericResponse.ok) {
-      throw new Error(genericData.error || genericResponse.statusText || "服务端普通邮箱列表读取失败");
+      throw new Error(genericData.error || genericResponse.statusText || "服务端其他邮箱列表读取失败");
     }
     const normalized = [
       ...((accountsData.accounts || []).map((item) => normalizeServerMailbox(item, "microsoft")).filter(Boolean)),
@@ -1307,7 +1326,9 @@ function accountCategoryOptions(active) {
 function filterAccounts() {
   const category = els.mailboxCategoryFilter.value;
   const query = els.mailboxSearch.value.trim().toLowerCase();
+  const source = state.mailboxSourceFilter || "all";
   return state.accounts.filter((account) => {
+    if (source !== "all" && accountSourceGroup(account) !== source) return false;
     if (category !== "all" && account.category !== category) return false;
     if (query && !account.email.toLowerCase().includes(query)) return false;
     return true;
@@ -1333,12 +1354,19 @@ function renderCategories() {
 }
 
 function renderAccounts() {
-  const tempCount = state.accounts.filter((account) => account.source === "temp").length;
-  const msCount = state.accounts.filter((account) => account.source === "microsoft").length;
+  const tempCount = state.accounts.filter((account) => accountSourceGroup(account) === "temp").length;
+  const msCount = state.accounts.filter((account) => accountSourceGroup(account) === "microsoft").length;
+  const genericCount = state.accounts.filter((account) => accountSourceGroup(account) === "generic").length;
   els.tempCount.textContent = String(tempCount);
   els.msCount.textContent = String(msCount);
+  if (els.genericCount) els.genericCount.textContent = String(genericCount);
+  els.mailboxSourceFilter?.querySelectorAll("button[data-source]").forEach((button) => {
+    const isActive = button.dataset.source === (state.mailboxSourceFilter || "all");
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", isActive ? "true" : "false");
+  });
   const accounts = filteredAccounts();
-  els.mailboxTotal.textContent = String(accounts.length);
+  els.mailboxTotal.textContent = String(state.accounts.length);
   const size = Number(els.mailboxPageSize.value || 20);
   const pages = Math.max(1, Math.ceil(accounts.length / size));
   state.mailboxPage = Math.min(Math.max(1, state.mailboxPage), pages);
@@ -1349,13 +1377,14 @@ function renderAccounts() {
   els.mailboxNextPage.disabled = state.mailboxPage >= pages;
   if (!pageAccounts.length) {
     els.mailboxList.className = "mailbox-list empty";
-    els.mailboxList.textContent = state.activeView === "login" ? "暂无凭证" : "暂无邮箱";
+    const sourceLabel = SOURCE_FILTER_LABELS[state.mailboxSourceFilter || "all"] || "当前";
+    els.mailboxList.textContent = state.activeView === "login" ? "暂无凭证" : `${sourceLabel}筛选下暂无邮箱`;
     return;
   }
   els.mailboxList.className = "mailbox-list";
   els.mailboxList.innerHTML = pageAccounts.map((account) => {
     const stateClass = statusClass(account.last_status);
-    const sourceText = account.source === "temp" ? "临时" : "Outlook";
+    const sourceText = SOURCE_FILTER_LABELS[accountSourceGroup(account)] || "其他";
     const category = account.category || EMPTY_CATEGORY_LABEL;
     const title = [
       account.email,
@@ -1775,23 +1804,6 @@ async function waitForMailFetchJob(jobId, total) {
   throw new Error("收信任务等待超时，请稍后查看邮箱状态或缩小本次同步数量。");
 }
 
-function serverPayloadForSync() {
-  const payload = payloadForSync();
-  const targets = selectedAccountsForPayload(payload);
-  const maskedIds = new Set(
-    targets
-      .filter((account) => accountHasMaskedCredential(account) && !hasUsableLocalCredential(account))
-      .map((account) => account.id)
-  );
-  return {
-    source: els.sourceFilter.value,
-    provider: els.providerFilter?.value || "auto",
-    sender_filter: els.senderInput.value.trim(),
-    limit: 20,
-    emails: targets.filter((account) => maskedIds.has(account.id)).map((account) => account.email),
-  };
-}
-
 function loginStateFor(account) {
   return state.loginJobs.get(account.id) || { status: "idle", error: "", jobId: "", logs: [] };
 }
@@ -2209,7 +2221,7 @@ function backupLocalData() {
   downloadJsonFile(`gpt-account-manager-local-backup-${timestamp}.json`, {
     app: "gpt-account-manager",
     kind: "browser-local-backup",
-    version: "20260529-openai-headers-align",
+    version: "0.8.4",
     exported_at: new Date().toISOString(),
     storage: Object.fromEntries(Object.values(STORAGE_KEYS).map((key) => [key, loadJson(key, null)])),
   });
@@ -2432,12 +2444,29 @@ Object.assign(MAIL_SERVICES.microsoft, {
   placeholder: "user@outlook.com----password----client_id----refresh_token----默认分组",
 });
 Object.assign(MAIL_SERVICES.temp, {
-  hint: "支持 TXT / JSON / CSV。文本格式：邮箱----JWT；可选：邮箱----JWT----分组。Temp API 已默认填好。",
-  placeholder: "user@example.com----JWT_TOKEN",
+  hint: "支持 TXT / JSON / CSV。临时邮箱只需要 JWT：邮箱----JWT；可选：邮箱----JWT----分组。Temp API 已默认填好。",
+  placeholder: "user@example.com----JWT_TOKEN\nuser@example.com----JWT_TOKEN----默认分组",
+});
+Object.assign(MAIL_SERVICES.generic, {
+  label: "其他邮箱",
+  hint: "支持 TXT / JSON / CSV。支持 163、QQ、iCloud、Gmail、Yahoo 等 IMAP/POP3 邮箱：邮箱----密码/授权码；可选：邮箱----密码----imap.example.com----993----分组。",
+  placeholder: [
+    "user@163.com----授权码或邮箱密码",
+    "user@qq.com----授权码",
+    "user@icloud.com----App 专用密码",
+    "user@gmail.com----App Password",
+    "user@example.com----password----imap.example.com----993----默认分组",
+  ].join("\n"),
 });
 Object.assign(MAIL_SERVICES.auto, {
-  hint: "支持 TXT / JSON / CSV。自动识别：Outlook 用 邮箱----密码----client_id----refresh_token；临时邮箱用 邮箱----JWT。",
-  placeholder: "user@outlook.com----password----client_id----refresh_token----默认分组\nuser@example.com----JWT_TOKEN",
+  hint: "支持 TXT / JSON / CSV。自动识别：Outlook 四段；临时邮箱 邮箱----JWT；其他邮箱 邮箱----密码/授权码 或 IMAP/POP3 扩展格式。",
+  placeholder: [
+    "user@outlook.com----password----client_id----refresh_token----默认分组",
+    "user@example.com----JWT_TOKEN----默认分组",
+    "user@163.com----授权码或邮箱密码",
+    "user@qq.com----授权码",
+    "user@icloud.com----App 专用密码",
+  ].join("\n"),
 });
 function looksLikeUrl(value) {
   const text = String(value || "").trim();
@@ -2592,7 +2621,7 @@ function importPreviewText() {
     `识别 ${rows.length} 个账号`,
     temp ? `临时邮箱 ${temp}` : "",
     microsoft ? `Outlook ${microsoft}` : "",
-    generic ? `普通邮箱 ${generic}` : "",
+    generic ? `其他邮箱 ${generic}` : "",
     duplicateCount ? `重复 ${duplicateCount}` : "",
     missing ? `缺少凭证 ${missing}` : "",
     errors.length ? `格式错误 ${errors.length}` : "",
@@ -2688,7 +2717,7 @@ async function persistImportedAccounts(source, rows) {
       ].join("----")).join("\n") }),
     });
     const data = await readJsonResponse(response, "/client-api/generic-accounts/import");
-    if (!response.ok) throw new Error(data.error || "普通邮箱导入失败");
+    if (!response.ok) throw new Error(data.error || "其他邮箱导入失败");
     results.push(data);
   }
   return { imported: rows.length, updated: 0, results };
@@ -2726,7 +2755,9 @@ function updateImportDialogCopy() {
   els.importModal.dataset.serviceTone = service.tone || service.source;
   els.importModalTitle.textContent = "导入邮箱";
   els.importFormatHint.textContent = service.hint;
+  els.importFormatHint.dataset.i18nOriginalText = service.hint;
   els.importText.placeholder = service.placeholder;
+  els.importText.dataset.i18nOriginalPlaceholder = service.placeholder;
   const tempMode = service.source === "temp";
   els.importTempApiField.hidden = !tempMode;
   els.importTempSitePasswordField.hidden = !tempMode;
@@ -2845,12 +2876,11 @@ async function syncMail() {
     toast("当前筛选下没有可刷新邮箱");
     return;
   }
-  const useServerStoredAccounts = shouldUseServerStoredAccounts(payload);
   const provider = normalizeProviderValue(els.providerFilter?.value);
   if (els.providerFilter && provider !== "auto") {
     addClientLog(`当前优先使用 ${provider === "graph" ? "Graph" : "IMAP"}；失败时会继续尝试其他微软收信通道。`, "info");
   }
-  if (payloadHasMaskedCredentials(payload) && !useServerStoredAccounts && !hasUsableLocalCredentialsForPayload(payload)) {
+  if (payloadHasMaskedCredentials(payload) && !hasUsableLocalCredentialsForPayload(payload) && !payload.emails.length) {
     toast(localCredentialHint());
     els.statusText.textContent = "当前浏览器没有真实凭证";
     return;
@@ -2861,13 +2891,13 @@ async function syncMail() {
   setInlineProgress(els.mailProgress, 12, `0/${total}`);
   const beforeCount = Number(state.messageTotal || state.messages.length || 0);
   try {
-    const endpoint = useServerStoredAccounts ? "/api/fetch" : "/client-api/fetch-start";
-    const requestPayload = useServerStoredAccounts ? serverPayloadForSync() : clientPayloadForSync(payload);
+    const endpoint = "/client-api/fetch-start";
+    const requestPayload = clientPayloadForSync(payload);
     requestPayload.provider = provider;
     setInlineProgress(els.mailProgress, 20, "请求中");
-    addClientLog(`刷新请求：${requestPayload.accounts?.length || 0} 个 Outlook，${requestPayload.temp_addresses?.length || 0} 个临时邮箱，${requestPayload.generic_accounts?.length || 0} 个普通邮箱，方式 ${provider}`, "info");
-    addClientLog(useServerStoredAccounts
-      ? "本次使用管理员服务端保存的打码账号刷新"
+    addClientLog(`刷新请求：${requestPayload.accounts?.length || 0} 个 Outlook，${requestPayload.temp_addresses?.length || 0} 个临时邮箱，${requestPayload.generic_accounts?.length || 0} 个其他邮箱，方式 ${provider}`, "info");
+    addClientLog(payloadHasMaskedCredentials(payload)
+      ? "本次使用当前工作区保存的邮箱凭证补齐打码账号"
       : "本次使用当前浏览器本地导入的邮箱凭证刷新", "info");
     const response = await fetch(endpoint, {
       method: "POST",
@@ -2876,13 +2906,10 @@ async function syncMail() {
     });
     const startedData = await readJsonResponse(response, endpoint);
     if (!response.ok) throw new Error(startedData.error || response.statusText);
-    let data = startedData;
-    if (!useServerStoredAccounts) {
-      const jobId = startedData.job?.job_id || startedData.job_id;
-      if (!jobId) throw new Error("收信任务没有返回 job_id");
-      addClientLog(`后台收信任务已启动：${jobId}`, "info");
-      data = await waitForMailFetchJob(jobId, total);
-    }
+    const jobId = startedData.job?.job_id || startedData.job_id;
+    if (!jobId) throw new Error("收信任务没有返回 job_id");
+    addClientLog(`后台收信任务已启动：${jobId}`, "info");
+    const data = await waitForMailFetchJob(jobId, total);
     setInlineProgress(els.mailProgress, 82, "处理中");
     state.page = 1;
     await loadServerMessages({ silent: true });
@@ -2910,7 +2937,7 @@ async function syncMail() {
       const hint = result.error_hint || humanizeMailError((result.errors || [])[0] || result.error || "");
       addClientLog(`${result.email || "未知邮箱"}：${label}${hint ? `，${hint}` : ""}`, "error");
     });
-    toast(errors.length ? "刷新完成，但有邮箱失败" : (useServerStoredAccounts ? "已用服务端凭证刷新" : "刷新完成"));
+    toast(errors.length ? "刷新完成，但有邮箱失败" : "刷新完成");
     renderAccounts();
     setInlineProgress(els.mailProgress, 100, "完成");
   } catch (error) {
@@ -3065,6 +3092,17 @@ els.mailboxPrevPage.addEventListener("click", () => {
 });
 els.mailboxNextPage.addEventListener("click", () => {
   state.mailboxPage += 1;
+  renderAccounts();
+});
+els.mailboxSourceFilter?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-source]");
+  if (!button) return;
+  state.mailboxSourceFilter = button.dataset.source || "all";
+  state.mailboxPage = 1;
+  const visibleIds = new Set(filteredAccounts().map((account) => account.id));
+  state.selected.forEach((id) => {
+    if (!visibleIds.has(id)) state.selected.delete(id);
+  });
   renderAccounts();
 });
 els.mailboxList.addEventListener("change", (event) => {

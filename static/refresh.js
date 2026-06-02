@@ -328,11 +328,11 @@ const ERROR_MANUAL = {
   imap_token_failed: "IMAP 授权失败",
   graph_fetch_failed: "Graph 收信失败",
   imap_fetch_failed: "IMAP 收信失败",
-  generic_config_missing: "普通邮箱配置缺失",
-  generic_auth_failed: "普通邮箱认证失败",
-  generic_imap_failed: "普通邮箱 IMAP 失败",
-  generic_pop3_failed: "普通邮箱 POP3 失败",
-  generic_api_failed: "普通邮箱 API 失败",
+  generic_config_missing: "其他邮箱配置缺失",
+  generic_auth_failed: "其他邮箱认证失败",
+  generic_imap_failed: "其他邮箱 IMAP 失败",
+  generic_pop3_failed: "其他邮箱 POP3 失败",
+  generic_api_failed: "其他邮箱 API 失败",
   temp_invalid_credential: "临时邮箱 JWT 无效",
   temp_forbidden: "临时邮箱拒绝访问",
   network_tls_eof: "网络 TLS 中断",
@@ -874,7 +874,7 @@ function savePhonePool() {
 
 function sourceLabel(account) {
   if (account.source === "microsoft") return account.service || "Outlook";
-  if (account.source === "generic") return account.service || "普通邮箱";
+  if (account.source === "generic") return account.service || "其他邮箱";
   return "临时邮箱";
 }
 
@@ -1995,7 +1995,7 @@ function missingCredentialDetails(row) {
     error_code: "mail_credentials_missing",
     error_hint: isTempLike
       ? "先在本页同步队列 JWT，或到账号管理页导入 邮箱----JWT"
-      : "先到账号管理页导入 Outlook 四段凭证，或导入普通邮箱授权码 / IMAP / POP3 / API 取信配置，再重新执行",
+      : "先到账号管理页导入 Outlook 四段凭证，或导入其他邮箱授权码 / IMAP / POP3 / API 取信配置，再重新执行",
   };
 }
 
@@ -2707,7 +2707,7 @@ function normalizeServerAccount(item, source) {
     email,
     name: email,
     source: normalizedSource,
-    service: normalizedSource === "temp" ? "Cloud Mail" : normalizedSource === "generic" ? "普通邮箱" : "Outlook",
+    service: normalizedSource === "temp" ? "Cloud Mail" : normalizedSource === "generic" ? "其他邮箱" : "Outlook",
     category: String(item?.label || item?.category || "").trim(),
     auth_file: null,
   };
@@ -2932,7 +2932,7 @@ async function syncAccountsFromServer({ quiet = false } = {}) {
     const [accountsData, tempData, genericData] = await Promise.all([
       readJsonResponse(accountsResponse, "同步 Outlook 邮箱失败"),
       readJsonResponse(tempResponse, "同步临时邮箱失败"),
-      readJsonResponse(genericResponse, "同步普通邮箱失败"),
+      readJsonResponse(genericResponse, "同步其他邮箱失败"),
     ]);
     if (!accountsResponse.ok) throw new Error(accountsData.error || accountsResponse.statusText || "Failed to load Outlook accounts");
     if (!tempResponse.ok) throw new Error(tempData.error || tempResponse.statusText || "Failed to load temp accounts");

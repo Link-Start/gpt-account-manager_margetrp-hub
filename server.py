@@ -74,7 +74,24 @@ LOGIN_HISTORY_FILE = DATA_DIR / "login_history.json"
 LOGIN_DEBUG_DIR = DATA_DIR / "login_debug"
 UPGRADE_REQUEST_FILE = DATA_DIR / "upgrade_request.json"
 UPGRADE_RESULT_FILE = DATA_DIR / "upgrade_result.json"
-APP_VERSION = "20260603-dashboard-insights"
+PACKAGE_FILE = ROOT / "package.json"
+
+
+def load_app_version() -> str:
+    env_version = (os.environ.get("GPT_ACCOUNT_MANAGER_VERSION") or os.environ.get("APP_VERSION") or "").strip()
+    if env_version:
+        return env_version
+    try:
+        payload = json.loads(PACKAGE_FILE.read_text(encoding="utf-8"))
+        version = str(payload.get("version") or "").strip()
+        if version:
+            return version
+    except Exception:
+        pass
+    return "0.0.0"
+
+
+APP_VERSION = load_app_version()
 
 DEFAULT_HOST = os.environ.get("MAIL_PICKUP_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("MAIL_PICKUP_PORT", "8765"))
@@ -6339,46 +6356,6 @@ def build_chatgpt_login_url(email_addr: str = "") -> str:
     return f"{CHATGPT_LOGIN_URL}{separator}{urllib.parse.urlencode({'email': email_addr})}"
 
 
-def create_manual_oauth_login(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload = payload or {}
-    state = secrets.token_urlsafe(32)
-    code_verifier = generate_openai_code_verifier()
-    authorize_url = build_openai_oauth_authorize_url(state, openai_code_challenge(code_verifier))
-    return {
-        "success": True,
-        "authorize_url": authorize_url,
-        "state": state,
-        "code_verifier": code_verifier,
-        "redirect_uri": OPENAI_OAUTH_REDIRECT_URI,
-        "email": coerce_text(payload.get("email")),
-    }
-
-
-def extract_oauth_callback_code(callback_url: str, expected_state: str = "") -> str:
-    parsed = urllib.parse.urlparse(coerce_text(callback_url))
-    query = urllib.parse.parse_qs(parsed.query)
-    error = first_text(query.get("error", [""])[0], query.get("error_description", [""])[0])
-    if error:
-        raise RuntimeError(f"OpenAI OAuth 授权失败：{error}")
-    returned_state = first_text(query.get("state", [""])[0])
-    if expected_state and returned_state and returned_state != expected_state:
-        raise RuntimeError("OpenAI OAuth state 校验失败，请重新生成授权链接")
-    code = first_text(query.get("code", [""])[0])
-    if not code:
-        raise RuntimeError("回调 URL 里没有 code，请确认粘贴的是 http://localhost:1455/auth/callback?... 完整地址")
-    return code
-
-
-def complete_manual_oauth_login(payload: dict[str, Any]) -> dict[str, Any]:
-    code = extract_oauth_callback_code(coerce_text(payload.get("callback_url") or payload.get("callbackUrl")), coerce_text(payload.get("state")))
-    code_verifier = coerce_text(payload.get("code_verifier") or payload.get("codeVerifier"))
-    result = complete_oauth_code_payload(payload, code, code_verifier)
-    result["manual_oauth"] = True
-    if isinstance(result.get("result"), dict):
-        result["result"]["manual_oauth"] = True
-    return result
-
-
 def complete_oauth_code_payload(payload: dict[str, Any], code: str, code_verifier: str) -> dict[str, Any]:
     if not code:
         raise RuntimeError("缺少 OAuth authorization code")
@@ -9308,7 +9285,7 @@ def push_public_pool(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "MailPickupTool/0.1"
+    server_version = f"GPTAccountManager/{APP_VERSION}"
 
     def do_GET(self) -> None:
         parsed_request = urllib.parse.urlparse(self.path)
@@ -10071,7 +10048,10 @@ class Handler(BaseHTTPRequestHandler):
             content_type = "text/css; charset=utf-8"
         elif target.suffix == ".js":
             content_type = "application/javascript; charset=utf-8"
-        body = target.read_bytes()
+        if target.suffix == ".html":
+            body = target.read_text(encoding="utf-8").replace("{{APP_VERSION}}", APP_VERSION).encode("utf-8")
+        else:
+            body = target.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -10106,7 +10086,7 @@ def main() -> None:
         print(f"Failed to load login history on startup: {e}", flush=True)
 
     server = ThreadingHTTPServer((DEFAULT_HOST, DEFAULT_PORT), Handler)
-    print(f"Mail pickup tool running at http://{DEFAULT_HOST}:{DEFAULT_PORT}", flush=True)
+    print(f"GPT Account Manager running at http://{DEFAULT_HOST}:{DEFAULT_PORT}", flush=True)
     if not ADMIN_TOKEN:
         print("Warning: MAIL_PICKUP_ADMIN_TOKEN is not set. Bind to 127.0.0.1 or protect with a reverse proxy.", flush=True)
     try:

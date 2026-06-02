@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GPT账号管理助手</title>
-  <link rel="stylesheet" href="/styles.css?v=20260603-dashboard-insights">
-  <link rel="stylesheet" href="/forge-theme.css?v=20260531-open-source-links">
-  <script src="/nav-links.js?v=20260531-docker-dns-links" defer></script>
-  <script src="/i18n.js?v=20260603-dashboard-insights" defer></script>
+  <link rel="stylesheet" href="/styles.css?v={{APP_VERSION}}">
+  <link rel="stylesheet" href="/forge-theme.css?v={{APP_VERSION}}">
+  <script src="/nav-links.js?v={{APP_VERSION}}" defer></script>
+  <script src="/i18n.js?v={{APP_VERSION}}" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -65,12 +65,17 @@
     <main class="workspace">
       <aside class="sidebar">
         <section class="panel mailbox-panel">
-          <div class="panel-head compact">
+          <div class="panel-head compact mailbox-title-head">
             <div>
               <p class="eyebrow">Mailbox list</p>
               <h2>邮箱清单</h2>
             </div>
-            <div class="mailbox-head-counts" aria-label="邮箱数量"><span>临时 <strong id="tempCount">0</strong></span><span>Outlook <strong id="msCount">0</strong></span><span>总数 <strong id="mailboxTotal">0</strong></span></div>
+            <div class="mailbox-source-filter" id="mailboxSourceFilter" aria-label="邮箱来源筛选">
+              <button type="button" class="active" data-source="all" aria-pressed="true"><span>全部</span><strong id="mailboxTotal">0</strong></button>
+              <button type="button" data-source="microsoft" aria-pressed="false"><span>Outlook</span><strong id="msCount">0</strong></button>
+              <button type="button" data-source="temp" aria-pressed="false"><span>临时</span><strong id="tempCount">0</strong></button>
+              <button type="button" data-source="generic" aria-pressed="false"><span>其他</span><strong id="genericCount">0</strong></button>
+            </div>
           </div>
           <div class="mailbox-search-row">
             <input id="mailboxSearch" placeholder="搜索邮箱">
@@ -117,7 +122,7 @@
               <option value="all">全部来源</option>
               <option value="temp">临时邮箱</option>
               <option value="microsoft">Outlook</option>
-              <option value="generic">普通邮箱</option>
+              <option value="generic">其他邮箱</option>
             </select>
             <select id="providerFilter" aria-label="Microsoft receive method">
               <option value="auto">微软自动</option>
@@ -267,10 +272,10 @@
           <option value="auto">自动识别</option>
           <option value="temp">临时邮箱</option>
           <option value="microsoft">Outlook</option>
-          <option value="generic">普通邮箱</option>
+          <option value="generic">其他邮箱</option>
         </select>
       </label>
-      <p id="importFormatHint" class="modal-hint">导入时保持 Outlook 四段格式。</p>
+      <p id="importFormatHint" class="modal-hint" data-i18n-skip="true">请选择邮箱服务后粘贴对应格式。</p>
       <label id="importTempApiField" class="modal-field" hidden>
         <span>Temp API 地址</span>
         <input id="importTempApi" type="url" placeholder="https://your-temp-worker.example">
@@ -284,7 +289,7 @@
         <em>支持 TXT / JSON / CSV</em>
         <input id="importFile" type="file" accept=".txt,.json,.csv,text/plain,application/json,text/csv">
       </label>
-      <textarea id="importText" spellcheck="false"></textarea>
+      <textarea id="importText" spellcheck="false" data-i18n-skip="true"></textarea>
       <div id="importPreview" class="import-preview">粘贴后会先预检格式，不会直接上传。</div>
       <div class="modal-actions">
         <button id="cancelImportBtn" class="ghost" type="button">取消</button>
@@ -315,7 +320,7 @@
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="/client.js?v=20260603-generic-mail-provider" defer></script>
+  <script src="/client.js?v={{APP_VERSION}}" defer></script>
 </body>
 </html>
 
