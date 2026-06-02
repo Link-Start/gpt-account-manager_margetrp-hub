@@ -74,7 +74,7 @@ LOGIN_HISTORY_FILE = DATA_DIR / "login_history.json"
 LOGIN_DEBUG_DIR = DATA_DIR / "login_debug"
 UPGRADE_REQUEST_FILE = DATA_DIR / "upgrade_request.json"
 UPGRADE_RESULT_FILE = DATA_DIR / "upgrade_result.json"
-APP_VERSION = "20260603-dashboard-stats"
+APP_VERSION = "20260603-dashboard-insights"
 
 DEFAULT_HOST = os.environ.get("MAIL_PICKUP_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("MAIL_PICKUP_PORT", "8765"))
@@ -798,6 +798,10 @@ def sorted_count_rows(counts: dict[str, int], key_name: str, *, limit: int = 20)
     ]
 
 
+def dashboard_message_recipient(message: dict[str, Any]) -> str:
+    return first_text(message.get("account"), message.get("recipient"), message.get("to"), message.get("email")).lower()
+
+
 def dashboard_stats_response(
     workspace_id: str,
     *,
@@ -841,6 +845,11 @@ def dashboard_stats_response(
         for item in generic_accounts
     ]
     mailbox_status_counts = count_by_value(all_mailboxes, lambda row: row.get("status") or "idle")
+    mailbox_source_counts = count_by_value(all_mailboxes, lambda row: row.get("source") or "unknown")
+    mailbox_error_counts = count_by_value(
+        [row for row in all_mailboxes if coerce_text(row.get("error_code"))],
+        lambda row: row.get("error_code") or "unknown",
+    )
     mailbox_error_count = sum(1 for row in all_mailboxes if coerce_text(row.get("status")).lower() in {"error", "failed"} or coerce_text(row.get("error_code")))
 
     def refresh_plan_type(row: dict[str, Any]) -> str:
@@ -862,6 +871,26 @@ def dashboard_stats_response(
 
     message_type_counts = count_by_value(messages, lambda row: row.get("mail_type") or classify_mail(" ".join(coerce_text(row.get(key)) for key in ["sender", "subject", "preview", "body"])))
     source_counts = count_by_value(messages, lambda row: row.get("source") or row.get("provider") or "unknown")
+    message_daily: dict[str, int] = {}
+    message_today = 0
+    message_week = 0
+    latest_message_at = ""
+    latest_message_sort = ""
+    for message in messages:
+        parsed = parse_message_datetime(message.get("received_at") or message.get("cached_at"))
+        if parsed:
+            local_day = parsed.astimezone(tz).date()
+            if local_day >= start_date:
+                day_key = local_day.isoformat()
+                message_daily[day_key] = message_daily.get(day_key, 0) + 1
+            if local_day.isoformat() == today_key:
+                message_today += 1
+            if local_day >= seven_start:
+                message_week += 1
+            sort_value = parsed.isoformat()
+            if sort_value > latest_message_sort:
+                latest_message_sort = sort_value
+                latest_message_at = parsed.isoformat()
 
     banned_daily: dict[str, int] = {}
     banned_domains: dict[str, int] = {}
@@ -880,7 +909,7 @@ def dashboard_stats_response(
         elif local_dt and local_dt.date() < start_date:
             continue
 
-        recipient = coerce_text(message.get("account"))
+        recipient = dashboard_message_recipient(message)
         domain = recipient.split("@", 1)[1].lower() if "@" in recipient else ""
         banned_daily[day_key] = banned_daily.get(day_key, 0) + 1
         if recipient:
@@ -899,12 +928,29 @@ def dashboard_stats_response(
 
     banned_messages.sort(key=lambda item: item.get("received_at") or "", reverse=True)
     daily_rows = []
+    message_daily_rows = []
     for index in range(days):
         day = start_date + timedelta(days=index)
         day_key = day.isoformat()
         daily_rows.append({"date": day_key, "count": banned_daily.get(day_key, 0)})
+        message_daily_rows.append({"date": day_key, "count": message_daily.get(day_key, 0)})
 
     banned_total = sum(item["count"] for item in daily_rows) + unknown_day_count
+    if banned_daily.get(today_key, 0) > 0:
+        risk_level = "high"
+        risk_reason = "today_banned_mail"
+    elif sum(row["count"] for row in daily_rows if datetime.fromisoformat(row["date"]).date() >= seven_start) > 0:
+        risk_level = "warning"
+        risk_reason = "recent_banned_mail"
+    elif mailbox_error_count > 0:
+        risk_level = "attention"
+        risk_reason = "mailbox_errors"
+    elif len(messages) == 0:
+        risk_level = "unknown"
+        risk_reason = "no_cached_mail"
+    else:
+        risk_level = "normal"
+        risk_reason = "no_recent_risk"
     return {
         "success": True,
         "version": APP_VERSION,
@@ -919,6 +965,8 @@ def dashboard_stats_response(
             "generic": len(generic_accounts),
             "error": mailbox_error_count,
             "status": sorted_count_rows(mailbox_status_counts, "status", limit=12),
+            "sources": sorted_count_rows(mailbox_source_counts, "source", limit=12),
+            "errors": sorted_count_rows(mailbox_error_counts, "error_code", limit=12),
         },
         "refresh": {
             "saved_total": len(refresh_results),
@@ -928,8 +976,16 @@ def dashboard_stats_response(
         },
         "messages": {
             "cached_total": len(messages),
+            "today": message_today,
+            "last_7_days": message_week,
+            "latest_at": latest_message_at,
+            "daily": message_daily_rows,
             "types": sorted_count_rows(message_type_counts, "type", limit=12),
             "sources": sorted_count_rows(source_counts, "source", limit=12),
+        },
+        "risk": {
+            "level": risk_level,
+            "reason": risk_reason,
         },
         "banned_mail": {
             "total": banned_total,

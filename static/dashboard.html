@@ -4,11 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GPT账号管理助手 - 仪表盘</title>
-  <link rel="stylesheet" href="/styles.css?v=20260603-dashboard-stats">
+  <link rel="stylesheet" href="/styles.css?v=20260603-dashboard-insights">
   <link rel="stylesheet" href="/forge-theme.css?v=20260531-open-source-links">
   <script src="/nav-links.js?v=20260531-docker-dns-links" defer></script>
-  <script src="/i18n.js?v=20260603-dashboard-stats" defer></script>
-  <script src="/dashboard.js?v=20260603-dashboard-stats" defer></script>
+  <script src="/i18n.js?v=20260603-dashboard-insights" defer></script>
+  <script src="/dashboard.js?v=20260603-dashboard-insights" defer></script>
 </head>
 <body>
   <div class="shell dashboard-shell">
@@ -81,6 +81,29 @@
         </div>
       </section>
 
+      <section class="dashboard-insight-strip" aria-label="风险摘要">
+        <article id="riskCard" class="dashboard-risk-card unknown">
+          <span>当前风险</span>
+          <strong id="riskLevel">等待数据</strong>
+          <em id="riskReason">正在读取缓存统计。</em>
+        </article>
+        <article class="dashboard-insight-card">
+          <span>今日缓存邮件</span>
+          <strong id="messageToday">0</strong>
+          <em>当天已写入缓存的邮件数量</em>
+        </article>
+        <article class="dashboard-insight-card">
+          <span>近 7 天缓存邮件</span>
+          <strong id="messageWeek">0</strong>
+          <em>用于判断取信是否持续有数据</em>
+        </article>
+        <article class="dashboard-insight-card">
+          <span>最新缓存时间</span>
+          <strong id="latestMessageAt">-</strong>
+          <em>按邮件接收/缓存时间统计</em>
+        </article>
+      </section>
+
       <section class="dashboard-kpi-grid" aria-label="关键指标">
         <article class="dashboard-kpi danger">
           <span>今日封禁邮件</span>
@@ -125,6 +148,26 @@
           <div id="banDomainRank" class="dashboard-rank-list empty">暂无封禁域名统计</div>
         </section>
 
+        <section class="panel dashboard-chart-panel">
+          <div class="section-head">
+            <div>
+              <h2>缓存邮件趋势</h2>
+              <p>按本机时区汇总当前工作区已缓存邮件，用来确认取信是否持续进入系统。</p>
+            </div>
+          </div>
+          <div id="messageDailyBars" class="dashboard-bars compact" aria-label="每日缓存邮件趋势"></div>
+        </section>
+
+        <section class="panel dashboard-rank-panel">
+          <div class="section-head">
+            <div>
+              <h2>邮件分类分布</h2>
+              <p>封禁、验证码、安全提醒等缓存邮件类型的占比。</p>
+            </div>
+          </div>
+          <div id="messageTypeRank" class="dashboard-rank-list empty">暂无邮件分类统计</div>
+        </section>
+
         <section class="panel dashboard-assets-panel">
           <div class="section-head">
             <div>
@@ -140,6 +183,7 @@
             <div><span>异常邮箱</span><strong id="mailboxError">0</strong></div>
             <div><span>缓存邮件</span><strong id="messageTotal">0</strong></div>
           </div>
+          <div id="mailboxStatusRank" class="dashboard-rank-list compact empty">暂无邮箱状态统计</div>
         </section>
 
         <section class="panel dashboard-assets-panel">
@@ -155,6 +199,26 @@
             <div><span>近 7 天</span><strong id="refreshWeek">0</strong></div>
           </div>
           <div id="planRank" class="dashboard-rank-list compact empty">暂无账号类型统计</div>
+        </section>
+
+        <section class="panel dashboard-rank-panel">
+          <div class="section-head">
+            <div>
+              <h2>取信来源分布</h2>
+              <p>Outlook、临时邮箱、普通邮箱等来源的缓存邮件数量。</p>
+            </div>
+          </div>
+          <div id="messageSourceRank" class="dashboard-rank-list empty">暂无取信来源统计</div>
+        </section>
+
+        <section class="panel dashboard-rank-panel">
+          <div class="section-head">
+            <div>
+              <h2>邮箱错误类型</h2>
+              <p>展示当前邮箱资产上最近记录的错误代码，便于先清理坏邮箱。</p>
+            </div>
+          </div>
+          <div id="mailboxErrorRank" class="dashboard-rank-list empty">暂无邮箱错误统计</div>
         </section>
 
         <section class="panel dashboard-table-panel">
