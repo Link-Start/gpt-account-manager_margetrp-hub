@@ -1738,10 +1738,12 @@ function renderDetail(message) {
 }
 
 function payloadForSync() {
-  const selected = state.accounts.filter((account) => state.selected.has(account.id));
-  const active = state.activeMailboxId ? state.accounts.filter((account) => account.id === state.activeMailboxId) : [];
   const filtered = filteredAccounts();
-  const targets = selected.length ? selected : (active.length ? active : filtered);
+  const selectedVisible = filtered.filter((account) => state.selected.has(account.id));
+  const activeVisible = state.activeMailboxId
+    ? filtered.filter((account) => account.id === state.activeMailboxId)
+    : [];
+  const targets = selectedVisible.length ? selectedVisible : (activeVisible.length ? activeVisible : filtered);
   const source = els.sourceFilter.value;
   const includeTemp = source === "all" || source === "temp";
   const includeMicrosoft = source === "all" || source === "microsoft";
@@ -2333,7 +2335,7 @@ function backupLocalData() {
   downloadJsonFile(`gpt-account-manager-local-backup-${timestamp}.json`, {
     app: "gpt-account-manager",
     kind: "browser-local-backup",
-    version: "1.0.0",
+    version: "1.0.1",
     exported_at: new Date().toISOString(),
     storage: Object.fromEntries(Object.values(STORAGE_KEYS).map((key) => [key, loadJson(key, null)])),
   });
