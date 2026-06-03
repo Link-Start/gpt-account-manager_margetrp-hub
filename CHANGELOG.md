@@ -1,5 +1,12 @@
 # 更新记录
 
+## 0.8.5
+
+- 第一阶段拆分 `server.py`：新增 `storage/workspace.py`，把工作区 ID 归一化、工作区文件路径、JSON 读写和数据计数集中到数据隔离层，降低邮箱库和刷新队列互相影响的风险。
+- 新增 `mail_providers.py`，统一维护其他邮箱主机推断、收信模式归一化、Microsoft provider 顺序、收信错误分类和并发收信调度；`server.py` 只保留具体取信实现和薄包装。
+- 新增 `refresh_state_machine.py`，先把刷新任务的细阶段拆成 `checking_mail / waiting_code / building_auth / syncing_cpa / success / failed` 等状态，同时继续兼容前端使用的 `queued / running / success / failed`。
+- 清理 `server.py` 里重复的邮箱 provider 常量、错误标签和并发调度代码，为后续继续拆 `cpa_client`、`dashboard_stats` 和 `http_handlers` 留出清晰边界。
+
 ## 0.8.4
 
 - 修复导入弹窗按邮箱服务显示错误示例的问题，临时邮箱模式不再出现 Outlook 四段格式。
