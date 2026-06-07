@@ -1,14 +1,36 @@
-const STORAGE_KEYS = {
+const WORKSPACE_ID_STORAGE_KEY = "ctgptm.workspaceId";
+
+function bootstrapWorkspaceId() {
+  const existing = window.GAM?.base?.getWorkspaceId?.(WORKSPACE_ID_STORAGE_KEY)
+    || localStorage.getItem(WORKSPACE_ID_STORAGE_KEY)
+    || "";
+  if (/^[A-Za-z0-9][A-Za-z0-9_.-]{5,63}$/.test(existing)) return existing;
+  const next = `ws_${crypto.randomUUID().replace(/-/g, "")}`;
+  localStorage.setItem(WORKSPACE_ID_STORAGE_KEY, next);
+  return next;
+}
+
+const workspaceId = bootstrapWorkspaceId();
+const LEGACY_STORAGE_KEYS = {
   accounts: "ctgptm.mail.accounts",
   categories: "ctgptm.mail.categories",
   messages: "ctgptm.mail.messages",
   ignoredMessages: "ctgptm.mail.ignoredMessages",
   refreshQueue: "ctgptm.mail.refreshQueue",
   abnormalRows: "ctgptm.mail.abnormalRows",
+  mailboxControlsCollapsed: "ctgptm.mail.mailboxControlsCollapsed.v2",
+};
+const STORAGE_KEYS = {
+  accounts: `${LEGACY_STORAGE_KEYS.accounts}:${workspaceId}`,
+  categories: `${LEGACY_STORAGE_KEYS.categories}:${workspaceId}`,
+  messages: `${LEGACY_STORAGE_KEYS.messages}:${workspaceId}`,
+  ignoredMessages: `${LEGACY_STORAGE_KEYS.ignoredMessages}:${workspaceId}`,
+  refreshQueue: `${LEGACY_STORAGE_KEYS.refreshQueue}:${workspaceId}`,
+  abnormalRows: `${LEGACY_STORAGE_KEYS.abnormalRows}:${workspaceId}`,
   cpaSettings: "ctgptm.mail.cpaSettings",
   tempSettings: "ctgptm.mail.tempSettings",
-  workspaceId: "ctgptm.workspaceId",
-  mailboxControlsCollapsed: "ctgptm.mail.mailboxControlsCollapsed.v2",
+  workspaceId: WORKSPACE_ID_STORAGE_KEY,
+  mailboxControlsCollapsed: `${LEGACY_STORAGE_KEYS.mailboxControlsCollapsed}:${workspaceId}`,
 };
 const DEFAULT_TEMP_WORKER_URL = "";
 const LEGACY_TEMP_WORKER_URLS = new Set([]);
@@ -208,7 +230,28 @@ const els = {
   toast: document.querySelector("#toast"),
 };
 
+const base = window.GAM?.base;
+const scheduler = window.GAM?.scheduler;
+const authQueryToken = base?.persistAdminTokenFromQuery?.() || new URLSearchParams(window.location.search).get("token") || "";
+if (!base && authQueryToken) {
+  localStorage.setItem("ctgptm.admin.toolToken", authQueryToken);
+}
+
+function migrateLegacyStorageKeys(names) {
+  names.forEach((name) => {
+    const legacyKey = LEGACY_STORAGE_KEYS[name];
+    const scopedKey = STORAGE_KEYS[name];
+    if (!legacyKey || !scopedKey || legacyKey === scopedKey) return;
+    if (localStorage.getItem(scopedKey) !== null) return;
+    const raw = localStorage.getItem(legacyKey);
+    if (raw === null) return;
+    localStorage.setItem(scopedKey, raw);
+    localStorage.removeItem(legacyKey);
+  });
+}
+
 localStorage.removeItem(STORAGE_KEYS.messages);
+migrateLegacyStorageKeys(["accounts", "categories", "ignoredMessages", "refreshQueue", "abnormalRows", "mailboxControlsCollapsed"]);
 repairLocalStorageKeys(Object.values(STORAGE_KEYS).filter((key) => key !== STORAGE_KEYS.messages));
 
 const storedAccounts = loadJson(STORAGE_KEYS.accounts, []);
@@ -239,12 +282,11 @@ const state = {
   mailboxPage: 1,
   lastFetchMessageCount: 0,
   mailboxControlsCollapsed: loadJson(STORAGE_KEYS.mailboxControlsCollapsed, true) !== false,
+  mailboxSyncRequestId: 0,
 };
 
 const cpaSettings = loadJson(STORAGE_KEYS.cpaSettings, {});
 const tempSettings = loadJson(STORAGE_KEYS.tempSettings, {});
-const authQueryToken = new URLSearchParams(window.location.search).get("token") || "";
-const workspaceId = getWorkspaceId();
 els.cpaBaseUrl.value = cpaSettings.base_url || "";
 els.cpaKey.value = cpaSettings.management_key || "";
 els.cpaLimit.value = cpaSettings.max_items || "50";
@@ -257,13 +299,12 @@ if (tempSettings.base_url && tempSettings.base_url !== els.importTempApi.value) 
   });
 }
 
-if (authQueryToken) {
-  localStorage.setItem("ctgptm.admin.toolToken", authQueryToken);
-}
-
 localStorage.removeItem("ctgptm.mail.tempWorkerUrl");
 
 function loadJson(key, fallback) {
+  if (base?.loadJson) {
+    return base.loadJson(key, fallback, { repair: repairStoredJson });
+  }
   try {
     const raw = localStorage.getItem(key);
     return raw ? repairStoredJson(JSON.parse(raw)) : fallback;
@@ -275,14 +316,22 @@ function loadJson(key, fallback) {
 function saveJson(key, value) {
   if (key === STORAGE_KEYS.messages) {
     localStorage.removeItem(key);
-    return;
+    return false;
+  }
+  if (base?.saveJson) {
+    return base.saveJson(key, value, {
+      onQuotaExceeded() {
+        console.warn("localStorage quota exceeded; skipped", key);
+      },
+    });
   }
   try {
     localStorage.setItem(key, JSON.stringify(value));
+    return true;
   } catch (error) {
     if (/quota|exceeded/i.test(String(error?.name || error?.message || ""))) {
       console.warn("localStorage quota exceeded; skipped", key);
-      return;
+      return false;
     }
     throw error;
   }
@@ -304,14 +353,13 @@ function toggleMailboxControls(forceCollapsed) {
 }
 
 function getWorkspaceId() {
-  const existing = localStorage.getItem(STORAGE_KEYS.workspaceId) || "";
-  if (/^[A-Za-z0-9][A-Za-z0-9_.-]{5,63}$/.test(existing)) return existing;
-  const next = `ws_${crypto.randomUUID().replace(/-/g, "")}`;
-  localStorage.setItem(STORAGE_KEYS.workspaceId, next);
-  return next;
+  return workspaceId;
 }
 
 function repairMojibakeText(value) {
+  if (base?.repairMojibakeText) {
+    return base.repairMojibakeText(value, MOJIBAKE_TEXT_FIXES);
+  }
   if (typeof value !== "string" || !value) return value;
   let text = value;
   MOJIBAKE_TEXT_FIXES.forEach((fixed, broken) => {
@@ -321,6 +369,9 @@ function repairMojibakeText(value) {
 }
 
 function repairStoredJson(value) {
+  if (base?.repairStoredJson) {
+    return base.repairStoredJson(value, MOJIBAKE_TEXT_FIXES);
+  }
   if (typeof value === "string") return repairMojibakeText(value);
   if (Array.isArray(value)) return value.map((item) => repairStoredJson(item));
   if (value && typeof value === "object") {
@@ -330,6 +381,10 @@ function repairStoredJson(value) {
 }
 
 function repairLocalStorageKeys(keys) {
+  if (base?.repairLocalStorageKeys) {
+    base.repairLocalStorageKeys(keys, { fixes: MOJIBAKE_TEXT_FIXES });
+    return;
+  }
   keys.forEach((key) => {
     const raw = localStorage.getItem(key);
     if (!raw) return;
@@ -347,6 +402,17 @@ function repairLocalStorageKeys(keys) {
 }
 
 async function readJsonResponse(response, label) {
+  if (base?.readJsonResponse) {
+    return base.readJsonResponse(response, label, {
+      snippetLimit: 220,
+      onParseError({ response: parseResponse, snippet }) {
+        if (parseResponse.status === 504 || /cloudflare|gateway timeout|<\/html>/i.test(snippet)) {
+          return new Error(`${label} 网关超时：这一批邮箱取信时间过长，已跳过该批并继续处理后续邮箱。`);
+        }
+        return `${label} returned non-JSON (${parseResponse.status}): ${snippet}`;
+      },
+    });
+  }
   const text = await response.text();
   try {
     return text ? JSON.parse(text) : {};
@@ -360,19 +426,15 @@ async function readJsonResponse(response, label) {
 }
 
 function rememberedAdminToken() {
-  return authQueryToken || localStorage.getItem("ctgptm.admin.toolToken") || "";
+  return base?.rememberedAdminToken?.(authQueryToken) || authQueryToken || localStorage.getItem("ctgptm.admin.toolToken") || "";
 }
 
 function apiHeaders() {
-  const headers = {
+  return base?.apiHeaders?.({ workspaceId, token: rememberedAdminToken() }) || {
     "Content-Type": "application/json",
     "X-Workspace-Id": workspaceId,
+    ...(rememberedAdminToken() ? { Authorization: `Bearer ${rememberedAdminToken()}` } : {}),
   };
-  const token = rememberedAdminToken();
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-  return headers;
 }
 
 function hasAdminToken() {
@@ -1549,38 +1611,74 @@ function messageQueryParams() {
   return params;
 }
 
+const latestMessagesRequest = scheduler?.createLatestOnlyRequest?.(async ({ payload, signal }) => {
+  const response = await fetch(`/client-api/messages?${payload.params}`, {
+    headers: apiHeaders(),
+    cache: "no-store",
+    signal,
+  });
+  const data = await readJsonResponse(response, "/client-api/messages");
+  return { response, data };
+});
+
+async function fetchMessagesPage() {
+  return fetchMessagesPageForParams(messageQueryParams().toString());
+}
+
+async function fetchMessagesPageForParams(params) {
+  if (latestMessagesRequest) {
+    const outcome = await latestMessagesRequest({ params });
+    if (outcome?.ignored) return null;
+    return outcome.result;
+  }
+  const response = await fetch(`/client-api/messages?${params}`, {
+    headers: apiHeaders(),
+    cache: "no-store",
+  });
+  const data = await readJsonResponse(response, "/client-api/messages");
+  return { response, data };
+}
+
+function applyLoadedMessages(loaded) {
+  const { response, data } = loaded;
+  if (!response.ok || data.success === false) {
+    throw new Error(data.error || response.statusText || "读取邮件缓存失败");
+  }
+  state.messages = normalizeStoredMessages(data.messages || []).filter((message) => !isIgnoredMessage(message));
+  state.messageTotal = Number(data.count ?? state.messages.length);
+  applyBannedStateFromMessages();
+}
+
 async function loadServerMessages({ silent = false } = {}) {
-  if (state.messagesLoading) return;
+  const requestId = (state.messageRequestId || 0) + 1;
+  state.messageRequestId = requestId;
   state.messagesLoading = true;
   if (!silent) renderMessages();
   try {
-    const response = await fetch(`/client-api/messages?${messageQueryParams().toString()}`, {
-      headers: apiHeaders(),
-      cache: "no-store",
-    });
-    const data = await readJsonResponse(response, "/client-api/messages");
-    if (!response.ok || data.success === false) {
-      throw new Error(data.error || response.statusText || "读取邮件缓存失败");
-    }
-    state.messages = normalizeStoredMessages(data.messages || []).filter((message) => !isIgnoredMessage(message));
-    state.messageTotal = Number(data.count ?? state.messages.length);
+    let params = messageQueryParams().toString();
+    let loaded = await fetchMessagesPageForParams(params);
+    if (!loaded || requestId !== state.messageRequestId) return;
+    applyLoadedMessages(loaded);
     const pages = Math.max(1, Math.ceil(state.messageTotal / Math.max(1, Number(els.pageSize.value || 20))));
     if (state.page > pages) {
       state.page = pages;
-      state.messagesLoading = false;
-      await loadServerMessages({ silent: true });
-      return;
+      params = messageQueryParams().toString();
+      loaded = await fetchMessagesPageForParams(params);
+      if (!loaded || requestId !== state.messageRequestId) return;
+      applyLoadedMessages(loaded);
     }
-    applyBannedStateFromMessages();
   } catch (error) {
+    if (requestId !== state.messageRequestId) return;
     if (!silent) {
       const message = error.message || "读取邮件缓存失败";
       addClientLog(`读取邮件缓存失败：${message}`, "error");
       toast(message);
     }
   } finally {
-    state.messagesLoading = false;
-    renderMessages();
+    if (requestId === state.messageRequestId) {
+      state.messagesLoading = false;
+      renderMessages();
+    }
   }
 }
 
@@ -1778,6 +1876,11 @@ function payloadForSync() {
   };
 }
 
+
+function selectedVisibleMailboxAccounts() {
+  return filteredAccounts().filter((account) => state.selected.has(account.id));
+}
+
 function accountPayloadForMessage(message) {
   const source = message.source === "temp" ? "temp" : (message.source === "generic" ? "generic" : "microsoft");
   const account = state.accounts.find((item) =>
@@ -1854,7 +1957,7 @@ async function deleteMessage(message) {
 async function deleteFilteredMessages() {
   const total = Number(state.messageTotal || 0);
   if (!total) return;
-  const selectedAccounts = state.accounts.filter((account) => state.selected.has(account.id));
+  const selectedAccounts = selectedVisibleMailboxAccounts();
   const typeLabel = selectedMailTypeLabel();
   const typeScope = typeLabel ? `${typeLabel}类型的 ` : "";
   const scope = selectedAccounts.length
@@ -1862,6 +1965,9 @@ async function deleteFilteredMessages() {
     : `当前筛选结果内 ${typeScope}${total} 封邮件`;
   if (!confirm(`确认删除${scope}？只删除本工具本地缓存，不会删除远端真实邮箱；后续刷新也不会再显示这些邮件。`)) return;
   const filter = Object.fromEntries(messageQueryParams().entries());
+  if (selectedAccounts.length) {
+    filter.accounts = selectedAccounts.map((account) => account.email).filter(Boolean);
+  }
   try {
     const response = await fetch("/client-api/messages/delete", {
       method: "POST",
@@ -2195,7 +2301,8 @@ function upsertAbnormalRows(rows) {
 }
 
 function rowsFromSelectedMailboxes() {
-  const selected = state.accounts.filter((account) => state.selected.has(account.id));
+  const visibleIds = new Set(filteredAccounts().map((account) => account.id));
+  const selected = state.accounts.filter((account) => state.selected.has(account.id) && visibleIds.has(account.id));
   return selected.map((account) => ({
     id: `local:${account.id}`,
     source_kind: "local",
@@ -2205,6 +2312,13 @@ function rowsFromSelectedMailboxes() {
     status: "idle",
     message: "来自左侧选中邮箱",
   }));
+}
+
+function pruneSelectedMailboxesToCurrentFilter() {
+  const visibleIds = new Set(filteredAccounts().map((account) => account.id));
+  state.selected.forEach((id) => {
+    if (!visibleIds.has(id)) state.selected.delete(id);
+  });
 }
 
 function localAccountForEmail(email) {
@@ -2461,8 +2575,11 @@ function renderLoginTable() {
 
 function selectedAbnormalRows({ failedOnly = false } = {}) {
   const chosen = state.abnormalRows.filter((row) => state.selectedAbnormal.has(row.id));
-  const base = chosen.length ? chosen : state.abnormalRows;
-  return failedOnly ? base.filter((row) => rowStateFor(row).status === "failed") : base;
+  if (failedOnly) {
+    const base = chosen.length ? chosen : state.abnormalRows;
+    return base.filter((row) => rowStateFor(row).status === "failed");
+  }
+  return chosen;
 }
 
 function startLoginForRows(rows) {
@@ -3217,10 +3334,7 @@ els.mailboxSourceFilter?.addEventListener("click", (event) => {
   if (!button) return;
   state.mailboxSourceFilter = button.dataset.source || "all";
   state.mailboxPage = 1;
-  const visibleIds = new Set(filteredAccounts().map((account) => account.id));
-  state.selected.forEach((id) => {
-    if (!visibleIds.has(id)) state.selected.delete(id);
-  });
+  pruneSelectedMailboxesToCurrentFilter();
   renderAccounts();
 });
 els.mailboxList.addEventListener("change", (event) => {
@@ -3324,31 +3438,41 @@ els.nextPage.addEventListener("click", () => {
   els.mailboxCategoryFilter,
   els.mailboxSearch,
   els.mailboxPageSize,
-  els.queryInput,
-  els.senderInput,
-  els.sourceFilter,
-  els.providerFilter,
-  els.typeFilter,
-  els.categoryFilter,
-  els.pageSize,
 ].forEach((input) => {
   if (!input) return;
-  input.addEventListener("input", () => {
-    state.page = 1;
+  const rerenderMailboxes = () => {
     state.mailboxPage = 1;
+    pruneSelectedMailboxesToCurrentFilter();
     renderCategories();
     renderAccounts();
     renderLoginTable();
-    loadServerMessages({ silent: true });
-  });
-  input.addEventListener("change", () => {
+  };
+  const debouncedRerenderMailboxes = scheduler?.debounce?.(rerenderMailboxes, 180) || rerenderMailboxes;
+  input.addEventListener("input", debouncedRerenderMailboxes);
+  input.addEventListener("change", rerenderMailboxes);
+});
+
+const debouncedMessageSearch = scheduler?.debounce?.(() => {
+  state.page = 1;
+  loadServerMessages({ silent: true });
+}, 250) || (() => {
+  state.page = 1;
+  loadServerMessages({ silent: true });
+});
+
+[els.queryInput, els.senderInput].forEach((input) => {
+  if (!input) return;
+  input.addEventListener("input", debouncedMessageSearch);
+  input.addEventListener("search", debouncedMessageSearch);
+});
+
+[els.sourceFilter, els.providerFilter, els.typeFilter, els.categoryFilter, els.pageSize].forEach((input) => {
+  if (!input) return;
+  const reloadMessages = () => {
     state.page = 1;
-    state.mailboxPage = 1;
-    renderCategories();
-    renderAccounts();
-    renderLoginTable();
     loadServerMessages({ silent: true });
-  });
+  };
+  input.addEventListener("change", reloadMessages);
 });
 
 renderAll();

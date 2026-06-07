@@ -1,13 +1,16 @@
 (() => {
+  const base = window.GAM?.base;
+  const scheduler = window.GAM?.scheduler;
   const STORAGE_KEYS = {
     workspaceId: "ctgptm.workspaceId",
   };
 
-  const authQueryToken = new URLSearchParams(window.location.search).get("token") || "";
-  if (authQueryToken) {
+  const authQueryToken = base?.persistAdminTokenFromQuery?.() || new URLSearchParams(window.location.search).get("token") || "";
+  if (!base && authQueryToken) {
     localStorage.setItem("ctgptm.admin.toolToken", authQueryToken);
   }
   let lastDashboardData = null;
+  let dashboardRequestId = 0;
 
   const els = {
     days: document.querySelector("#dashboardDays"),
@@ -45,6 +48,7 @@
   };
 
   function getWorkspaceId() {
+    if (base?.getWorkspaceId) return base.getWorkspaceId(STORAGE_KEYS.workspaceId);
     const existing = localStorage.getItem(STORAGE_KEYS.workspaceId) || "";
     if (/^[A-Za-z0-9][A-Za-z0-9_.-]{5,63}$/.test(existing)) return existing;
     const next = `ws_${crypto.randomUUID().replace(/-/g, "")}`;
@@ -55,20 +59,19 @@
   const workspaceId = getWorkspaceId();
 
   function rememberedAdminToken() {
-    return authQueryToken || localStorage.getItem("ctgptm.admin.toolToken") || "";
+    return base?.rememberedAdminToken?.(authQueryToken) || authQueryToken || localStorage.getItem("ctgptm.admin.toolToken") || "";
   }
 
   function apiHeaders() {
-    const headers = {
+    return base?.apiHeaders?.({ workspaceId, token: rememberedAdminToken() }) || {
       "Content-Type": "application/json",
       "X-Workspace-Id": workspaceId,
+      ...(rememberedAdminToken() ? { Authorization: `Bearer ${rememberedAdminToken()}` } : {}),
     };
-    const token = rememberedAdminToken();
-    if (token) headers.Authorization = `Bearer ${token}`;
-    return headers;
   }
 
   async function readJsonResponse(response, label) {
+    if (base?.readJsonResponse) return base.readJsonResponse(response, label, { snippetLimit: 180 });
     const text = await response.text();
     try {
       return text ? JSON.parse(text) : {};
@@ -311,7 +314,19 @@
     applyI18n();
   }
 
+  const latestDashboardRequest = scheduler?.createLatestOnlyRequest?.(async ({ payload, signal }) => {
+    const response = await fetch(`/client-api/dashboard-stats?${payload.params}`, {
+      headers: apiHeaders(),
+      cache: "no-store",
+      signal,
+    });
+    const data = await readJsonResponse(response, text("仪表盘数据", "Dashboard data"));
+    return { response, data };
+  });
+
   async function loadDashboard() {
+    const requestId = dashboardRequestId + 1;
+    dashboardRequestId = requestId;
     const days = Number(els.days?.value || 30);
     const tzOffset = -new Date().getTimezoneOffset();
     els.reload.disabled = true;
@@ -322,16 +337,33 @@
         limit: "500",
         tz_offset: String(tzOffset),
       });
-      const response = await fetch(`/client-api/dashboard-stats?${params.toString()}`, {
-        headers: apiHeaders(),
-        cache: "no-store",
-      });
-      const data = await readJsonResponse(response, text("仪表盘数据", "Dashboard data"));
+      let response;
+      let data;
+      if (latestDashboardRequest) {
+        const outcome = await latestDashboardRequest({ params: params.toString() });
+        if (outcome?.ignored) {
+          if (requestId === dashboardRequestId) {
+            els.reload.disabled = false;
+            applyI18n();
+          }
+          return;
+        }
+        ({ response, data } = outcome.result || {});
+      } else {
+        response = await fetch(`/client-api/dashboard-stats?${params.toString()}`, {
+          headers: apiHeaders(),
+          cache: "no-store",
+        });
+        data = await readJsonResponse(response, text("仪表盘数据", "Dashboard data"));
+      }
+      if (requestId !== dashboardRequestId) return;
       if (!response.ok || !data.success) throw new Error(data.error || text("仪表盘数据读取失败", "Failed to load dashboard data"));
       render(data);
     } catch (error) {
+      if (requestId !== dashboardRequestId) return;
       setText(els.meta, error.message || text("仪表盘数据读取失败", "Failed to load dashboard data"));
     } finally {
+      if (requestId !== dashboardRequestId) return;
       els.reload.disabled = false;
       applyI18n();
     }

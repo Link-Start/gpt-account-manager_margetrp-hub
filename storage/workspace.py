@@ -34,9 +34,21 @@ def write_json_file(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def normalize_workspace_id(value: Any) -> str:
+def parse_workspace_id(value: Any) -> str | None:
     text = str(value or "").strip()
-    if not text or not WORKSPACE_ID_PATTERN.fullmatch(text):
+    if not text:
+        return None
+    if not WORKSPACE_ID_PATTERN.fullmatch(text):
+        raise ValueError("invalid workspace_id")
+    return text
+
+
+def normalize_workspace_id(value: Any) -> str:
+    try:
+        text = parse_workspace_id(value)
+    except ValueError:
+        text = None
+    if not text:
         return "public"
     return text
 

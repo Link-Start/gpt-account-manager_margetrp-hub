@@ -1,0 +1,174 @@
+(function initSharedBase() {
+  const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{5,63}$/;
+  const DEFAULT_WORKSPACE_KEY = "ctgptm.workspaceId";
+  const DEFAULT_ADMIN_TOKEN_KEY = "ctgptm.admin.toolToken";
+
+  function persistAdminTokenFromQuery(options = {}) {
+    const {
+      search = window.location.search,
+      queryKey = "token",
+      storageKey = DEFAULT_ADMIN_TOKEN_KEY,
+    } = options;
+    const token = new URLSearchParams(search || "").get(queryKey) || "";
+    if (token) localStorage.setItem(storageKey, token);
+    return token;
+  }
+
+  function rememberedAdminToken(explicitToken = "", options = {}) {
+    const storageKey = options.storageKey || DEFAULT_ADMIN_TOKEN_KEY;
+    return explicitToken || localStorage.getItem(storageKey) || "";
+  }
+
+  function getWorkspaceId(storageKey = DEFAULT_WORKSPACE_KEY) {
+    const existing = localStorage.getItem(storageKey) || "";
+    if (WORKSPACE_ID_PATTERN.test(existing)) return existing;
+    const next = `ws_${crypto.randomUUID().replace(/-/g, "")}`;
+    localStorage.setItem(storageKey, next);
+    return next;
+  }
+
+  function apiHeaders(options = {}) {
+    const workspaceStorageKey = options.workspaceStorageKey || DEFAULT_WORKSPACE_KEY;
+    const workspaceId = options.workspaceId || getWorkspaceId(workspaceStorageKey);
+    const token = rememberedAdminToken(options.token || "", { storageKey: options.adminTokenStorageKey });
+    const headers = { "X-Workspace-Id": workspaceId };
+    if (options.includeContentType !== false) {
+      headers["Content-Type"] = options.contentType || "application/json";
+    }
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return headers;
+  }
+
+  function repairMojibakeText(value, fixes) {
+    if (typeof value !== "string" || !value) return value;
+    let text = value;
+    if (fixes && typeof fixes.forEach === "function") {
+      fixes.forEach((fixed, broken) => {
+        text = text.split(broken).join(fixed);
+      });
+    }
+    return text;
+  }
+
+  function repairStoredJson(value, fixes) {
+    if (typeof value === "string") return repairMojibakeText(value, fixes);
+    if (Array.isArray(value)) return value.map((item) => repairStoredJson(item, fixes));
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [key, repairStoredJson(item, fixes)]),
+      );
+    }
+    return value;
+  }
+
+  function repairLocalStorageKeys(keys, options = {}) {
+    const fixes = options.fixes;
+    keys.forEach((key) => {
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      try {
+        const parsed = JSON.parse(raw);
+        const repaired = repairStoredJson(parsed, fixes);
+        if (JSON.stringify(parsed) !== JSON.stringify(repaired)) {
+          localStorage.setItem(key, JSON.stringify(repaired));
+        }
+      } catch {
+        const repaired = repairMojibakeText(raw, fixes);
+        if (repaired !== raw) localStorage.setItem(key, repaired);
+      }
+    });
+  }
+
+  function loadJson(key, fallback, options = {}) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return fallback;
+      const parsed = JSON.parse(raw);
+      return typeof options.repair === "function" ? options.repair(parsed) : parsed;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function saveJson(key, value, options = {}) {
+    if (typeof options.skip === "function" && options.skip(key, value)) return false;
+    if (options.skip === true) return false;
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+      return true;
+    } catch (error) {
+      if (/quota|exceeded/i.test(String(error?.name || error?.message || ""))) {
+        if (typeof options.onQuotaExceeded === "function") {
+          options.onQuotaExceeded(error);
+        } else {
+          console.warn("localStorage quota exceeded; skipped", key);
+        }
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  async function readJsonResponse(response, label, options = {}) {
+    const text = await response.text();
+    if (!text) {
+      if (options.throwOnHttpError && !response.ok) {
+        throw new Error(label || response.statusText || "Request failed");
+      }
+      return {};
+    }
+    try {
+      const data = JSON.parse(text);
+      if (options.throwOnHttpError && !response.ok) {
+        if (typeof options.httpErrorBuilder === "function") {
+          throw options.httpErrorBuilder({ response, label, text, data });
+        }
+        throw new Error(data?.error || label || response.statusText || "Request failed");
+      }
+      return data;
+    } catch (error) {
+      if (options.allowTextFallback) {
+        const data = { error: text.slice(0, options.fallbackTextLimit || 300) };
+        if (options.throwOnHttpError && !response.ok) {
+          if (typeof options.httpErrorBuilder === "function") {
+            throw options.httpErrorBuilder({ response, label, text, data });
+          }
+          throw new Error(data.error || label || response.statusText || "Request failed");
+        }
+        return data;
+      }
+      const snippet = text.replace(/\s+/g, " ").slice(0, options.snippetLimit || 220);
+      if (typeof options.onParseError === "function") {
+        const custom = options.onParseError({ response, label, text, snippet, error });
+        if (custom instanceof Error) throw custom;
+        if (typeof custom === "string" && custom) throw new Error(custom);
+      }
+      throw new Error(`${label || "Request"} returned non-JSON (${response.status}): ${snippet}`);
+    }
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      "\"": "&quot;",
+      "'": "&#39;",
+    }[char]));
+  }
+
+  window.GAM = window.GAM || {};
+  window.GAM.base = {
+    persistAdminTokenFromQuery,
+    getWorkspaceId,
+    rememberedAdminToken,
+    apiHeaders,
+    loadJson,
+    saveJson,
+    readJsonResponse,
+    escapeHtml,
+    repairMojibakeText,
+    repairStoredJson,
+    repairLocalStorageKeys,
+  };
+}());

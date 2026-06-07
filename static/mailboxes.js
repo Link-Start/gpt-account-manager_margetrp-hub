@@ -1,8 +1,25 @@
-const STORAGE_KEYS = {
+const WORKSPACE_ID_STORAGE_KEY = "ctgptm.workspaceId";
+
+function bootstrapWorkspaceId() {
+  const existing = window.GAM?.base?.getWorkspaceId?.(WORKSPACE_ID_STORAGE_KEY)
+    || localStorage.getItem(WORKSPACE_ID_STORAGE_KEY)
+    || "";
+  if (/^[A-Za-z0-9][A-Za-z0-9_.-]{5,63}$/.test(existing)) return existing;
+  const next = `ws_${crypto.randomUUID().replace(/-/g, "")}`;
+  localStorage.setItem(WORKSPACE_ID_STORAGE_KEY, next);
+  return next;
+}
+
+const workspaceId = bootstrapWorkspaceId();
+const LEGACY_STORAGE_KEYS = {
   accounts: "ctgptm.mail.accounts",
   categories: "ctgptm.mail.categories",
+};
+const STORAGE_KEYS = {
+  accounts: `${LEGACY_STORAGE_KEYS.accounts}:${workspaceId}`,
+  categories: `${LEGACY_STORAGE_KEYS.categories}:${workspaceId}`,
   tempSettings: "ctgptm.mail.tempSettings",
-  workspaceId: "ctgptm.workspaceId",
+  workspaceId: WORKSPACE_ID_STORAGE_KEY,
 };
 
 const RESERVED_CATEGORY_NAMES = new Set(["已封禁"]);
@@ -91,34 +108,61 @@ const els = {
   toast: document.querySelector("#toast"),
 };
 
-const authQueryToken = new URLSearchParams(window.location.search).get("token") || "";
-if (authQueryToken) localStorage.setItem("ctgptm.admin.toolToken", authQueryToken);
+const base = window.GAM?.base;
+const scheduler = window.GAM?.scheduler;
+const authQueryToken = base?.persistAdminTokenFromQuery?.() || new URLSearchParams(window.location.search).get("token") || "";
+if (!base && authQueryToken) localStorage.setItem("ctgptm.admin.toolToken", authQueryToken);
 
-const workspaceId = getWorkspaceId();
+function migrateLegacyStorageKeys(names) {
+  names.forEach((name) => {
+    const legacyKey = LEGACY_STORAGE_KEYS[name];
+    const scopedKey = STORAGE_KEYS[name];
+    if (!legacyKey || !scopedKey || legacyKey === scopedKey) return;
+    if (localStorage.getItem(scopedKey) !== null) return;
+    const raw = localStorage.getItem(legacyKey);
+    if (raw === null) return;
+    localStorage.setItem(scopedKey, raw);
+    localStorage.removeItem(legacyKey);
+  });
+}
+
+migrateLegacyStorageKeys(["accounts", "categories"]);
+
 const state = {
   accounts: normalizeStoredAccounts(loadJson(STORAGE_KEYS.accounts, [])),
   categories: normalizeStoredCategories(loadJson(STORAGE_KEYS.categories, [])),
   selected: new Set(),
   page: 1,
   sourceView: "all",
+  syncRequestId: 0,
+  filteredCacheKey: "",
+  filteredCacheRows: [],
 };
 
 const tempSettings = loadJson(STORAGE_KEYS.tempSettings, {});
 els.tempApi.value = normalizeTempWorkerUrl(tempSettings.base_url || "");
 els.tempSitePassword.value = tempSettings.site_password || "";
 els.workspaceText.textContent = workspaceId;
-saveAll();
 
 function loadJson(key, fallback) {
+  if (base?.loadJson) return base.loadJson(key, fallback);
   try {
     const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
+    return raw ? repairStoredJson(JSON.parse(raw)) : fallback;
   } catch {
     return fallback;
   }
 }
 
 function saveJson(key, value) {
+  if (base?.saveJson) {
+    return base.saveJson(key, value, {
+      onQuotaExceeded() {
+        console.warn("localStorage quota exceeded; skipped", key);
+        toast("浏览器本地存储已满，已跳过本地缓存写入");
+      },
+    });
+  }
   try {
     localStorage.setItem(key, JSON.stringify(value));
     return true;
@@ -133,28 +177,38 @@ function saveJson(key, value) {
 }
 
 function getWorkspaceId() {
-  const existing = localStorage.getItem(STORAGE_KEYS.workspaceId) || "";
-  if (/^[A-Za-z0-9][A-Za-z0-9_.-]{5,63}$/.test(existing)) return existing;
-  const next = `ws_${crypto.randomUUID().replace(/-/g, "")}`;
-  localStorage.setItem(STORAGE_KEYS.workspaceId, next);
-  return next;
+  return workspaceId;
+}
+
+function repairMojibakeText(value) {
+  if (base?.repairMojibakeText) return base.repairMojibakeText(value, new Map());
+  return value;
+}
+
+function repairStoredJson(value) {
+  if (base?.repairStoredJson) return base.repairStoredJson(value, new Map());
+  if (typeof value === "string") return repairMojibakeText(value);
+  if (Array.isArray(value)) return value.map((item) => repairStoredJson(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, repairStoredJson(item)]));
+  }
+  return value;
 }
 
 function rememberedAdminToken() {
-  return authQueryToken || localStorage.getItem("ctgptm.admin.toolToken") || "";
+  return base?.rememberedAdminToken?.(authQueryToken) || authQueryToken || localStorage.getItem("ctgptm.admin.toolToken") || "";
 }
 
 function apiHeaders() {
-  const headers = {
+  return base?.apiHeaders?.({ workspaceId, token: rememberedAdminToken() }) || {
     "Content-Type": "application/json",
     "X-Workspace-Id": workspaceId,
+    ...(rememberedAdminToken() ? { Authorization: `Bearer ${rememberedAdminToken()}` } : {}),
   };
-  const token = rememberedAdminToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
-  return headers;
 }
 
 async function readJsonResponse(response, label) {
+  if (base?.readJsonResponse) return base.readJsonResponse(response, label, { snippetLimit: 180 });
   const text = await response.text();
   try {
     return text ? JSON.parse(text) : {};
@@ -704,6 +758,7 @@ function upsertAccounts(incoming) {
     if (account.category) ensureCategory(account.category);
   });
   state.accounts = sortAccounts(byId.values());
+  invalidateFilteredAccountsCache();
   saveAll();
   return { imported, updated };
 }
@@ -735,19 +790,40 @@ function mergeServerAccounts(items) {
     if (item.category) ensureCategory(item.category);
   });
   state.accounts = sortAccounts(byId.values());
+  invalidateFilteredAccountsCache();
   saveAll();
 }
 
 function selectedRows() {
-  return state.accounts.filter((account) => state.selected.has(account.id));
+  const visibleIds = new Set(filteredAccounts().map((account) => account.id));
+  return state.accounts.filter((account) => state.selected.has(account.id) && visibleIds.has(account.id));
+}
+
+function pruneSelectedRowsToCurrentFilter() {
+  const visibleIds = new Set(filteredAccounts().map((account) => account.id));
+  state.selected.forEach((id) => {
+    if (!visibleIds.has(id)) state.selected.delete(id);
+  });
+}
+
+function mailboxFilterCacheKey() {
+  return JSON.stringify([
+    state.accounts.length,
+    els.searchInput.value.trim().toLowerCase(),
+    els.sourceFilter.value || "all",
+    state.sourceView,
+    els.groupFilter.value || "all",
+  ]);
 }
 
 function filteredAccounts() {
+  const cacheKey = mailboxFilterCacheKey();
+  if (cacheKey === state.filteredCacheKey) return state.filteredCacheRows;
   const query = els.searchInput.value.trim().toLowerCase();
   const selectedSource = els.sourceFilter.value || "all";
   const source = selectedSource === "all" ? state.sourceView : selectedSource;
   const group = els.groupFilter.value;
-  return state.accounts.filter((account) => {
+  const rows = state.accounts.filter((account) => {
     if (source === "microsoft" && account.source !== "microsoft") return false;
     if (source === "temp" && account.source !== "temp") return false;
     if (source === "generic" && account.source !== "generic") return false;
@@ -758,6 +834,23 @@ function filteredAccounts() {
     const haystack = [account.email, account.category, accountKindLabel(account), account.source].join(" ").toLowerCase();
     return haystack.includes(query);
   });
+  state.filteredCacheKey = cacheKey;
+  state.filteredCacheRows = rows;
+  return rows;
+}
+
+function invalidateFilteredAccountsCache() {
+  state.filteredCacheKey = "";
+  state.filteredCacheRows = [];
+}
+
+function visibleAccountsForCurrentPage() {
+  const rows = filteredAccounts();
+  const pageSize = Number(els.pageSize.value || 50);
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const page = Math.min(Math.max(1, state.page), totalPages);
+  const start = (page - 1) * pageSize;
+  return rows.slice(start, start + pageSize);
 }
 
 function renderGroupFilter() {
@@ -856,6 +949,16 @@ function renderAll() {
   renderTable();
 }
 
+const debouncedRenderTable = scheduler?.debounce
+  ? scheduler.debounce(() => {
+    state.page = 1;
+    renderAll();
+  }, 180)
+  : () => {
+    state.page = 1;
+    renderAll();
+  };
+
 function mailboxCopyLine(account) {
   if (account.source === "temp") {
     return [account.email, account.jwt || "", account.base_url || "", account.site_password || "", account.category || ""].join("----");
@@ -897,10 +1000,12 @@ function downloadBlob(fileName, blob) {
 
 function exportableRows() {
   const selected = selectedRows();
-  return selected.length ? selected : filteredAccounts();
+  return selected.length ? selected : visibleAccountsForCurrentPage();
 }
 
 async function syncMailboxes({ quiet = false } = {}) {
+  const requestId = state.syncRequestId + 1;
+  state.syncRequestId = requestId;
   try {
     setStatus("正在同步工作空间邮箱。");
     const [accountsResponse, tempResponse, genericResponse] = await Promise.all([
@@ -913,6 +1018,7 @@ async function syncMailboxes({ quiet = false } = {}) {
       readJsonResponse(tempResponse, "/client-api/temp-addresses"),
       readJsonResponse(genericResponse, "/client-api/generic-accounts"),
     ]);
+    if (requestId !== state.syncRequestId) return;
     if (!accountsResponse.ok) throw new Error(accountsData.error || "Outlook 邮箱同步失败");
     if (!tempResponse.ok) throw new Error(tempData.error || "临时邮箱同步失败");
     if (!genericResponse.ok) throw new Error(genericData.error || "其他邮箱同步失败");
@@ -921,13 +1027,16 @@ async function syncMailboxes({ quiet = false } = {}) {
       ...(tempData.addresses || []).map((item) => normalizeServerMailbox(item, "temp")).filter(Boolean),
       ...(genericData.accounts || []).map((item) => normalizeServerMailbox(item, "generic")).filter(Boolean),
     ];
+    if (requestId !== state.syncRequestId) return;
     mergeServerAccounts(rows);
     setStatus(`已同步 ${rows.length} 个邮箱。`, "ok");
     if (!quiet) toast(`已同步 ${rows.length} 个邮箱`);
   } catch (error) {
+    if (requestId !== state.syncRequestId) return;
     setStatus(error.message || "同步失败", "error");
     if (!quiet) toast(error.message || "同步失败");
   } finally {
+    if (requestId !== state.syncRequestId) return;
     renderAll();
   }
 }
@@ -1068,6 +1177,7 @@ async function deleteAccounts(accounts) {
     const removeIds = new Set(accounts.map((account) => account.id));
     state.accounts = state.accounts.filter((account) => !removeIds.has(account.id));
     accounts.forEach((account) => state.selected.delete(account.id));
+    invalidateFilteredAccountsCache();
     saveAll();
     setStatus(`已删除 ${data.deleted?.total ?? accounts.length} 个邮箱。`, "ok");
     toast("已删除");
@@ -1091,26 +1201,35 @@ function setSelectedGroup() {
     row.category = next;
     if (next) ensureCategory(next);
   });
+  invalidateFilteredAccountsCache();
   saveAll();
   setStatus(`已设置 ${rows.length} 个邮箱的分组。`, "ok");
   renderAll();
 }
 
-els.searchInput.addEventListener("input", () => {
+const rerenderTableWithSelectionPrune = () => {
   state.page = 1;
+  pruneSelectedRowsToCurrentFilter();
   renderTable();
-});
+};
+const debouncedRerenderTableWithSelectionPrune = scheduler?.debounce?.(rerenderTableWithSelectionPrune, 180) || rerenderTableWithSelectionPrune;
+
+els.searchInput.addEventListener("input", debouncedRerenderTableWithSelectionPrune);
+els.searchInput.addEventListener("search", rerenderTableWithSelectionPrune);
 els.sourceFilter.addEventListener("change", () => {
   state.page = 1;
   state.sourceView = els.sourceFilter.value;
+  pruneSelectedRowsToCurrentFilter();
   renderAll();
 });
 els.groupFilter.addEventListener("change", () => {
   state.page = 1;
+  pruneSelectedRowsToCurrentFilter();
   renderTable();
 });
 els.pageSize.addEventListener("change", () => {
   state.page = 1;
+  pruneSelectedRowsToCurrentFilter();
   renderTable();
 });
 els.prevPage.addEventListener("click", () => {
@@ -1144,6 +1263,7 @@ els.sideFilters.forEach((button) => {
     state.sourceView = button.dataset.managerFilter || "all";
     els.sourceFilter.value = ["all", "microsoft", "temp", "generic"].includes(state.sourceView) ? state.sourceView : "all";
     state.page = 1;
+    pruneSelectedRowsToCurrentFilter();
     renderAll();
   });
 });
@@ -1213,6 +1333,8 @@ els.exportBackupBtn.addEventListener("click", () => {
     categories: state.categories,
     accounts: state.accounts,
   });
+  setStatus(`Backup exported: ${state.accounts.length} mailboxes`, "ok");
+  toast(`Backup exported: ${state.accounts.length} mailboxes`);
 });
 
 renderAll();

@@ -1,10 +1,30 @@
-const STORAGE_KEYS = {
+const WORKSPACE_ID_STORAGE_KEY = "ctgptm.workspaceId";
+
+function bootstrapWorkspaceId() {
+  const existing = window.GAM?.base?.getWorkspaceId?.(WORKSPACE_ID_STORAGE_KEY)
+    || localStorage.getItem(WORKSPACE_ID_STORAGE_KEY)
+    || "";
+  if (/^[A-Za-z0-9][A-Za-z0-9_.-]{5,63}$/.test(existing)) return existing;
+  const next = `ws_${crypto.randomUUID().replace(/-/g, "")}`;
+  localStorage.setItem(WORKSPACE_ID_STORAGE_KEY, next);
+  return next;
+}
+
+const workspaceId = bootstrapWorkspaceId();
+const LEGACY_STORAGE_KEYS = {
   accounts: "ctgptm.mail.accounts",
   categories: "ctgptm.mail.categories",
   refreshQueue: "ctgptm.mail.refreshQueue",
   refreshSettings: "ctgptm.mail.refreshSettings",
   phonePool: "ctgptm.mail.phonePool",
-  workspaceId: "ctgptm.workspaceId",
+};
+const STORAGE_KEYS = {
+  accounts: `${LEGACY_STORAGE_KEYS.accounts}:${workspaceId}`,
+  categories: `${LEGACY_STORAGE_KEYS.categories}:${workspaceId}`,
+  refreshQueue: `${LEGACY_STORAGE_KEYS.refreshQueue}:${workspaceId}`,
+  refreshSettings: `${LEGACY_STORAGE_KEYS.refreshSettings}:${workspaceId}`,
+  phonePool: `${LEGACY_STORAGE_KEYS.phonePool}:${workspaceId}`,
+  workspaceId: WORKSPACE_ID_STORAGE_KEY,
 };
 
 const EMPTY_CATEGORY_LABEL = "未分组";
@@ -50,6 +70,27 @@ const MOJIBAKE_TEXT_FIXES = new Map([
   ["\u9352\u72bb\u6ace", "删除"],
   ["\u7ee0\uff04\u608a", "管理"],
 ]);
+const base = window.GAM?.base;
+const scheduler = window.GAM?.scheduler;
+const authQueryToken = base?.persistAdminTokenFromQuery?.() || new URLSearchParams(window.location.search).get("token") || "";
+if (!base && authQueryToken) {
+  localStorage.setItem("ctgptm.admin.toolToken", authQueryToken);
+}
+
+function migrateLegacyStorageKeys(names) {
+  names.forEach((name) => {
+    const legacyKey = LEGACY_STORAGE_KEYS[name];
+    const scopedKey = STORAGE_KEYS[name];
+    if (!legacyKey || !scopedKey || legacyKey === scopedKey) return;
+    if (localStorage.getItem(scopedKey) !== null) return;
+    const raw = localStorage.getItem(legacyKey);
+    if (raw === null) return;
+    localStorage.setItem(scopedKey, raw);
+    localStorage.removeItem(legacyKey);
+  });
+}
+
+migrateLegacyStorageKeys(["accounts", "categories", "refreshQueue", "refreshSettings", "phonePool"]);
 repairLocalStorageKeys(Object.values(STORAGE_KEYS));
 
 const storedRefreshQueue = loadJson(STORAGE_KEYS.refreshQueue, []);
@@ -75,7 +116,9 @@ const state = {
   logThrottle: new Map(),
   manualCodeTimers: new Map(),
   runner: null,
+  runnerToken: 0,
   manualCodeTarget: null,
+  queueMarkup: "",
 };
 
 const MAX_LOGIN_ATTEMPTS = 3;
@@ -144,6 +187,7 @@ const els = {
   queueFailed: document.querySelector("#queueFailed"),
   queueProgress: document.querySelector("#queueProgress"),
   queueSelectAll: document.querySelector("#queueSelectAll"),
+  queueFilterButtons: Array.from(document.querySelectorAll("[data-queue-filter]")),
   queueBody: document.querySelector("#queueBody"),
   clearLogs: document.querySelector("#clearLogs"),
   logHint: document.querySelector("#logHint"),
@@ -185,6 +229,7 @@ const els = {
   phoneCodeCurrent: document.querySelector("#phoneCodeCurrent"),
   saveManualPhoneCode: document.querySelector("#saveManualPhoneCode"),
   pollSelectedPhone: document.querySelector("#pollSelectedPhone"),
+  phoneCodePanel: document.querySelector(".phone-code-panel"),
   addPhoneEntry: document.querySelector("#addPhoneEntry"),
   phonePoolList: document.querySelector("#phonePoolList"),
   phoneBindingList: document.querySelector("#phoneBindingList"),
@@ -218,13 +263,10 @@ if (els.phoneModeOneToOne) els.phoneModeOneToOne.checked = settings.phone_pool_m
 if (els.loginStrategy) els.loginStrategy.value = "protocol";
 if (els.taskMode) els.taskMode.value = "login";
 
-const authQueryToken = new URLSearchParams(window.location.search).get("token") || "";
-const workspaceId = getWorkspaceId();
-if (authQueryToken) {
-  localStorage.setItem("ctgptm.admin.toolToken", authQueryToken);
-}
-
 function loadJson(key, fallback) {
+  if (base?.loadJson) {
+    return base.loadJson(key, fallback, { repair: repairStoredJson });
+  }
   try {
     const raw = localStorage.getItem(key);
     return raw ? repairStoredJson(JSON.parse(raw)) : fallback;
@@ -234,6 +276,13 @@ function loadJson(key, fallback) {
 }
 
 function saveJson(key, value) {
+  if (base?.saveJson) {
+    return base.saveJson(key, value, {
+      onQuotaExceeded() {
+        console.warn("localStorage quota exceeded; skipped", key);
+      },
+    });
+  }
   try {
     localStorage.setItem(key, JSON.stringify(value));
     return true;
@@ -247,32 +296,22 @@ function saveJson(key, value) {
 }
 
 function getWorkspaceId() {
-  const existing = localStorage.getItem(STORAGE_KEYS.workspaceId) || "";
-  if (/^[A-Za-z0-9][A-Za-z0-9_.-]{5,63}$/.test(existing)) return existing;
-  const next = `ws_${crypto.randomUUID().replace(/-/g, "")}`;
-  localStorage.setItem(STORAGE_KEYS.workspaceId, next);
-  return next;
+  return workspaceId;
 }
 
 function repairMojibakeText(value) {
-  if (typeof value !== "string" || !value) return value;
-  let text = value;
-  MOJIBAKE_TEXT_FIXES.forEach((fixed, broken) => {
-    text = text.split(broken).join(fixed);
-  });
-  return text;
+  return base?.repairMojibakeText?.(value, MOJIBAKE_TEXT_FIXES) ?? value;
 }
 
 function repairStoredJson(value) {
-  if (typeof value === "string") return repairMojibakeText(value);
-  if (Array.isArray(value)) return value.map((item) => repairStoredJson(item));
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, repairStoredJson(item)]));
-  }
-  return value;
+  return base?.repairStoredJson?.(value, MOJIBAKE_TEXT_FIXES) ?? value;
 }
 
 function repairLocalStorageKeys(keys) {
+  if (base?.repairLocalStorageKeys) {
+    base.repairLocalStorageKeys(keys, { fixes: MOJIBAKE_TEXT_FIXES });
+    return;
+  }
   keys.forEach((key) => {
     const raw = localStorage.getItem(key);
     if (!raw) return;
@@ -290,19 +329,15 @@ function repairLocalStorageKeys(keys) {
 }
 
 function rememberedAdminToken() {
-  return authQueryToken || localStorage.getItem("ctgptm.admin.toolToken") || "";
+  return base?.rememberedAdminToken?.(authQueryToken) || authQueryToken || localStorage.getItem("ctgptm.admin.toolToken") || "";
 }
 
 function apiHeaders() {
-  const headers = {
+  return base?.apiHeaders?.({ workspaceId, token: rememberedAdminToken() }) || {
     "Content-Type": "application/json",
     "X-Workspace-Id": workspaceId,
+    ...(rememberedAdminToken() ? { Authorization: `Bearer ${rememberedAdminToken()}` } : {}),
   };
-  const token = rememberedAdminToken();
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-  return headers;
 }
 
 function withAdminToken(url) {
@@ -644,6 +679,19 @@ function isPhoneVerificationError(code, text = "") {
 }
 
 async function readJsonResponse(response, fallback = "请求失败") {
+  if (base?.readJsonResponse) {
+    return base.readJsonResponse(response, fallback, {
+      allowTextFallback: true,
+      fallbackTextLimit: 300,
+      throwOnHttpError: true,
+      httpErrorBuilder({ data }) {
+        const details = parseErrorPayload(data, fallback);
+        const error = new Error(details.error || fallback);
+        error.details = details;
+        return error;
+      },
+    });
+  }
   const text = await response.text();
   let data = {};
   if (text) {
@@ -1109,6 +1157,7 @@ function failRow(row, details) {
   });
   saveQueue();
   renderQueue();
+  renderSources();
   addLog(`${row.email} ${formatJobError(rowState(row))}`, "error");
 }
 
@@ -1379,7 +1428,19 @@ function queueKey(account) {
   ].join("|");
 }
 
+function sourceFilterScopeActive() {
+  return Boolean(
+    els.sourceSearch?.value.trim()
+    || (els.sourceType?.value || "all") !== "all"
+    || (els.sourceCategory?.value || "all") !== "all"
+  );
+}
+
 function selectedSourceAccounts() {
+  const visibleAccounts = filteredAccounts();
+  const visibleSelected = visibleAccounts.filter((account) => state.selectedAccounts.has(account.id));
+  if (visibleSelected.length) return visibleSelected;
+  if (sourceFilterScopeActive()) return [];
   return state.accounts.filter((account) => state.selectedAccounts.has(account.id));
 }
 
@@ -1639,6 +1700,10 @@ function rowState(row) {
   };
 }
 
+function isQueueRowTracked(rowId) {
+  return state.queue.some((row) => row.id === rowId);
+}
+
 function loginLabel(status) {
   return {
     idle: "等待",
@@ -1699,34 +1764,35 @@ function renderQueueProgress(counts) {
 
 function renderQueue() {
   const counts = { idle: 0, queued: 0, running: 0, success: 0, failed: 0 };
+  const visibleQueue = queueRowsForCurrentFilter();
   state.queue.forEach((row) => {
     const status = rowState(row).status || "idle";
     counts[status] = (counts[status] || 0) + 1;
   });
   els.queueTotal.textContent = String(state.queue.length);
-  els.queueIdle.textContent = String(counts.idle || 0);
+  els.queueIdle.textContent = String((counts.idle || 0) + (counts.queued || 0));
   els.queueRunning.textContent = String((counts.queued || 0) + (counts.running || 0));
   els.queueSuccess.textContent = String(counts.success || 0);
   els.queueFailed.textContent = String(counts.failed || 0);
   renderQueueProgress(counts);
   if (els.queueSelectAll) {
-    const visibleRows = queueRowsForCurrentFilter();
-    els.queueSelectAll.checked = Boolean(visibleRows.length) && visibleRows.every((row) => state.selectedQueue.has(row.id));
-    els.queueSelectAll.indeterminate = visibleRows.some((row) => state.selectedQueue.has(row.id)) && !els.queueSelectAll.checked;
+    els.queueSelectAll.checked = Boolean(visibleQueue.length) && visibleQueue.every((row) => state.selectedQueue.has(row.id));
+    els.queueSelectAll.indeterminate = visibleQueue.some((row) => state.selectedQueue.has(row.id)) && !els.queueSelectAll.checked;
   }
-  document.querySelectorAll("[data-queue-filter]").forEach((button) => {
+  els.queueFilterButtons.forEach((button) => {
     button.classList.toggle("active", button.dataset.queueFilter === state.queueFilter);
   });
-  const visibleQueue = queueRowsForCurrentFilter();
   if (!state.queue.length) {
+    state.queueMarkup = "";
     els.queueBody.innerHTML = '<tr><td colspan="6" class="empty-cell">从左侧选择邮箱加入刷新队列。</td></tr>';
     return;
   }
   if (!visibleQueue.length) {
+    state.queueMarkup = "";
     els.queueBody.innerHTML = '<tr><td colspan="6" class="empty-cell">当前筛选没有账号。</td></tr>';
     return;
   }
-  els.queueBody.innerHTML = visibleQueue.map((row) => {
+  const markup = visibleQueue.map((row) => {
     const job = rowState(row);
     const status = displayStatus(job);
     const rawStatus = job.status || "idle";
@@ -1760,13 +1826,29 @@ function renderQueue() {
       </tr>
     `;
   }).join("");
+  if (state.queueMarkup !== markup) {
+    els.queueBody.innerHTML = markup;
+    state.queueMarkup = markup;
+  }
 }
 
-function selectedQueueRows({ failedOnly = false } = {}) {
-  const chosen = state.queue.filter((row) => state.selectedQueue.has(row.id));
-  const base = chosen.length ? chosen : state.queue.filter((row) => rowState(row).status === "queued");
-  const rows = base.length ? base : state.queue;
-  return failedOnly ? rows.filter((row) => rowState(row).status === "failed") : rows;
+function selectedQueueRows({ failedOnly = false, fallback = "all" } = {}) {
+  const visibleIds = new Set(queueRowsForCurrentFilter().map((row) => row.id));
+  const selected = state.queue.filter((row) => state.selectedQueue.has(row.id) && visibleIds.has(row.id));
+  if (failedOnly) {
+    const selectedFailed = selected.filter((row) => rowState(row).status === "failed");
+    if (selectedFailed.length) return selectedFailed;
+    if (fallback === "none") return [];
+    const filteredFailed = queueRowsForCurrentFilter().filter((row) => rowState(row).status === "failed");
+    if (filteredFailed.length) return filteredFailed;
+    return state.queue.filter((row) => rowState(row).status === "failed");
+  }
+  if (selected.length) return selected;
+  if (fallback === "none") return [];
+  const queued = state.queue.filter((row) => rowState(row).status === "queued");
+  if (queued.length) return queued;
+  const filtered = queueRowsForCurrentFilter();
+  return filtered.length ? filtered : state.queue;
 }
 
 function markRowsQueued(rows) {
@@ -1786,6 +1868,7 @@ function markRowsQueued(rows) {
   if (count) {
     saveQueue();
     renderQueue();
+    renderSources();
   }
   return count;
 }
@@ -1795,8 +1878,16 @@ function queuedRows() {
 }
 
 function selectedSingleQueueRow() {
-  const rows = state.queue.filter((row) => state.selectedQueue.has(row.id));
+  const visibleIds = new Set(queueRowsForCurrentFilter().map((row) => row.id));
+  const rows = state.queue.filter((row) => state.selectedQueue.has(row.id) && visibleIds.has(row.id));
   return rows.length === 1 ? rows[0] : null;
+}
+
+function pruneSelectedQueueToCurrentFilter() {
+  const visibleIds = new Set(queueRowsForCurrentFilter().map((row) => row.id));
+  state.selectedQueue.forEach((id) => {
+    if (!visibleIds.has(id)) state.selectedQueue.delete(id);
+  });
 }
 
 function openManualCodeDialog(row, kind = "email") {
@@ -2021,6 +2112,9 @@ function renderPhonePool() {
 function renderSelectedPhoneCodePanel() {
   if (!els.phoneCodeAccount) return;
   const row = selectedSingleQueueRow();
+  if (els.phoneCodePanel) els.phoneCodePanel.hidden = !row;
+  if (els.saveManualPhoneCode) els.saveManualPhoneCode.disabled = !row;
+  if (els.pollSelectedPhone) els.pollSelectedPhone.disabled = !row;
   if (!row) {
     els.phoneCodeAccount.textContent = "未选中队列账号";
     els.phoneCodeCurrent.textContent = "手机验证码：-";
@@ -2179,7 +2273,9 @@ function removePhoneEntry(phoneId) {
   });
   savePhonePool();
   saveQueue();
-  renderAll();
+  renderSources();
+  renderQueue();
+  renderSelectedPhoneCodePanel();
 }
 
 async function pollPhoneEntry(phoneId, rowId = "") {
@@ -2530,6 +2626,7 @@ async function cancelLoginJob(row) {
   const current = rowState(row);
   const jobId = row.jobId || current.jobId || "";
   if (!jobId) {
+    if (!isQueueRowTracked(row.id)) return;
     row.status = "failed";
     row.error = "任务已终止";
     row.error_code = "login_cancelled";
@@ -2548,6 +2645,7 @@ async function cancelLoginJob(row) {
     const details = parseErrorPayload(data, "终止失败");
     throw new Error(details.error || "终止失败");
   }
+  if (!isQueueRowTracked(row.id)) return;
   applyJobToRow(row, data.job || {}, current);
   addLog(`${row.email} 任务已终止`, "warning", { step: "cancel", email: row.email });
   renderAll();
@@ -2721,6 +2819,7 @@ async function preflightMailPickup(row, payload) {
 }
 
 function applyJobToRow(row, job, current = rowState(row)) {
+  if (!isQueueRowTracked(row.id)) return false;
   const oldCount = current.logs?.length || 0;
   (job.logs || []).slice(oldCount).forEach((entry) => {
     addLog(`${row.email} ${entry.message || ""}`, entry.level || "info", {
@@ -2784,11 +2883,13 @@ function applyJobToRow(row, job, current = rowState(row)) {
   }
   saveJson(STORAGE_KEYS.accounts, state.accounts);
   saveQueue();
+  return true;
 }
 
 async function waitForJob(row, jobId) {
   while (true) {
     await sleep(2000);
+    if (!isQueueRowTracked(row.id)) return "removed";
     const current = rowState(row);
     const response = await fetch(`/client-api/cpa/login-status?job_id=${encodeURIComponent(jobId)}`, { headers: apiHeaders(), cache: "no-store" });
     const data = await readJsonResponse(response, "读取任务失败");
@@ -2797,10 +2898,13 @@ async function waitForJob(row, jobId) {
       const error = new Error(details.error || "读取任务失败");
       error.details = details;
       throw error;
-    }
-    const job = data.job || {};
-    applyJobToRow(row, job, current);
-    renderAll();
+      }
+      const job = data.job || {};
+      const applied = applyJobToRow(row, job, current);
+      if (!applied) return "removed";
+      renderSources();
+      renderQueue();
+      renderSelectedPhoneCodePanel();
     if (["success", "failed"].includes(row.status)) {
       if (row.status === "failed") {
         addLog(`${row.email} ${formatJobError(rowState(row))}`, "error", {
@@ -2904,15 +3008,19 @@ async function startRows(rows) {
     addLog(`已加入队列：${queued} 个账号，等待当前任务结束`, "info");
     return;
   }
-  state.runner = runQueuedRows();
+  const runToken = state.runnerToken + 1;
+  state.runnerToken = runToken;
+  state.runner = runQueuedRows(runToken);
   try {
     await state.runner;
   } finally {
-    state.runner = null;
+    if (state.runnerToken === runToken) {
+      state.runner = null;
+    }
   }
 }
 
-async function runQueuedRows() {
+async function runQueuedRows(runToken) {
   saveSettings();
   await syncAccountsFromServer({ quiet: true });
   els.startSelected.disabled = true;
@@ -2923,10 +3031,11 @@ async function runQueuedRows() {
   if (els.loginConcurrency) els.loginConcurrency.value = "1";
   addLog(`开始执行队列：${queuedRows().length} 个账号，单账号顺序处理`, "info");
   try {
-    while (true) {
+    while (runToken === state.runnerToken) {
       const row = queuedRows()[0];
       if (!row) break;
       await startLogin(row);
+      if (runToken !== state.runnerToken) break;
       if (queuedRows().length) {
         await sleep(1500);
       }
@@ -2935,19 +3044,28 @@ async function runQueuedRows() {
     els.startSelected.disabled = false;
     els.retryFailed.disabled = false;
     els.startSelected.textContent = oldText;
+    if (state.runnerToken === runToken) {
+      state.runner = null;
+    }
     renderAll();
   }
 }
 
 function startPolling() {
   if (state.poller) return;
+  if (scheduler?.createPollLoop) {
+    state.poller = scheduler.createPollLoop(pollJobs, { intervalMs: 2000 });
+    state.poller.start();
+    return;
+  }
   state.poller = setInterval(pollJobs, 2000);
 }
 
 async function pollJobs() {
   const pending = state.queue.filter((row) => ["queued", "running"].includes(rowState(row).status));
   if (!pending.length) {
-    clearInterval(state.poller);
+    if (typeof state.poller?.stop === "function") state.poller.stop();
+    else clearInterval(state.poller);
     state.poller = undefined;
     return;
   }
@@ -2986,7 +3104,9 @@ async function pollJobs() {
       saveQueue();
     }
   }
-  renderAll();
+  renderSources();
+  renderQueue();
+  renderSelectedPhoneCodePanel();
 }
 
 function accountSub2apiItem(row, authFile) {
@@ -3482,13 +3602,29 @@ els.sourceNext.addEventListener("click", () => {
   state.sourcePage += 1;
   renderSources();
 });
-[els.sourceSearch, els.sourceType, els.sourceCategory, els.sourcePageSize].forEach((input) => {
+const debouncedRenderSources = scheduler?.debounce
+  ? scheduler.debounce(() => {
+    state.sourcePage = 1;
+    renderSources();
+  }, 180)
+  : () => {
+    state.sourcePage = 1;
+    renderSources();
+  };
+
+if (els.sourceSearch) {
+  els.sourceSearch.addEventListener("input", debouncedRenderSources);
+  els.sourceSearch.addEventListener("search", debouncedRenderSources);
+}
+[els.sourceType, els.sourceCategory, els.sourcePageSize].forEach((input) => {
   input.addEventListener("input", () => {
     state.sourcePage = 1;
+    pruneSelectedQueueToCurrentFilter();
     renderSources();
   });
   input.addEventListener("change", () => {
     state.sourcePage = 1;
+    pruneSelectedQueueToCurrentFilter();
     renderSources();
   });
 });
@@ -3511,6 +3647,7 @@ if (els.queueSelectAll) {
       visibleRows.forEach((row) => state.selectedQueue.delete(row.id));
     }
     renderQueue();
+    renderSelectedPhoneCodePanel();
   });
 }
 els.queueBody.addEventListener("click", (event) => {
@@ -3543,7 +3680,7 @@ els.queueBody.addEventListener("click", (event) => {
     toast(state.runner ? "已加入队列，将按顺序执行" : "已加入队列，请点击执行选中启动");
   }
 });
-els.startSelected.addEventListener("click", () => startRows(selectedQueueRows()));
+els.startSelected.addEventListener("click", () => startRows(selectedQueueRows({ fallback: "none" })));
 els.retryFailed.addEventListener("click", () => startRows(selectedQueueRows({ failedOnly: true })));
 if (els.cleanFailed) {
   els.cleanFailed.addEventListener("click", cleanFailedRows);
@@ -3551,7 +3688,7 @@ if (els.cleanFailed) {
 document.querySelectorAll("[data-queue-filter]").forEach((button) => {
   button.addEventListener("click", () => {
     state.queueFilter = button.dataset.queueFilter || "all";
-    state.selectedQueue.clear();
+    pruneSelectedQueueToCurrentFilter();
     renderQueue();
     renderSelectedPhoneCodePanel();
   });
@@ -3640,12 +3777,30 @@ if (els.phonePoolList) {
     }
   });
 }
-els.clearQueue.addEventListener("click", () => {
+els.clearQueue.addEventListener("click", async () => {
+  const rowsToCancel = state.queue.filter((row) => ["queued", "running"].includes(rowState(row).status));
+  state.runnerToken += 1;
+  if (typeof state.poller?.stop === "function") state.poller.stop();
+  else if (state.poller) clearInterval(state.poller);
+  state.poller = undefined;
+  closeManualCodeDialog();
+  state.manualCodeTimers.forEach((timer) => clearTimeout(timer));
+  state.manualCodeTimers.clear();
+  await Promise.all(rowsToCancel.map((row) => (
+    cancelLoginJob(row).catch((error) => {
+      addLog(`${row.email} 终止失败：${error.message || "unknown"}`, "error", {
+        error_code: "login_cancel_failed",
+        email: row.email,
+      });
+    })
+  )));
   state.queue = [];
   state.selectedQueue.clear();
   state.jobs.clear();
   saveQueue();
   renderQueue();
+  renderSelectedPhoneCodePanel();
+  renderSources();
 });
 [els.useProxy, els.proxyUrl, els.loginStrategy, els.loginConcurrency, els.autoUpdateCpa, els.cpaBaseUrl, els.cpaManagementKey, els.taskMode, els.tempSyncApi, els.tempSyncAdminKey, els.tempSyncSitePassword].forEach((input) => {
   if (input) {
@@ -3654,6 +3809,8 @@ els.clearQueue.addEventListener("click", () => {
   }
 });
 els.clearLogs.addEventListener("click", () => {
+  state.lastLog = null;
+  state.logThrottle.clear();
   els.logList.innerHTML = '<div class="client-log-item">等待操作。</div>';
   els.logHint.textContent = "等待执行。";
 });
