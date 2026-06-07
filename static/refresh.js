@@ -120,6 +120,7 @@ const state = {
   manualCodeTarget: null,
   queueMarkup: "",
 };
+const pendingSaveTimers = new Map();
 
 const MAX_LOGIN_ATTEMPTS = 3;
 const ACCOUNT_COOLDOWN_MS = 6500;
@@ -293,6 +294,16 @@ function saveJson(key, value) {
     }
     throw error;
   }
+}
+
+function scheduleSaveJson(key, value, delay = 220) {
+  const existing = pendingSaveTimers.get(key);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    pendingSaveTimers.delete(key);
+    saveJson(key, value);
+  }, delay);
+  pendingSaveTimers.set(key, timer);
 }
 
 function getWorkspaceId() {
@@ -1281,11 +1292,11 @@ function normalizePhonePool(value) {
 }
 
 function saveQueue() {
-  saveJson(STORAGE_KEYS.refreshQueue, state.queue.map(compactQueueRowForStorage));
+  scheduleSaveJson(STORAGE_KEYS.refreshQueue, state.queue.map(compactQueueRowForStorage));
 }
 
 function savePhonePool() {
-  saveJson(STORAGE_KEYS.phonePool, state.phonePool);
+  scheduleSaveJson(STORAGE_KEYS.phonePool, state.phonePool);
 }
 
 function sourceLabel(account) {
@@ -1382,18 +1393,26 @@ function filteredAccounts() {
   });
 }
 
+function visibleSourceAccountsForCurrentPage() {
+  const accounts = filteredAccounts();
+  const size = Number(els.sourcePageSize.value || 20);
+  const pages = Math.max(1, Math.ceil(accounts.length / size));
+  const page = Math.min(Math.max(1, state.sourcePage), pages);
+  return accounts.slice((page - 1) * size, page * size);
+}
+
 function renderSources() {
   els.sourceCategory.innerHTML = accountOptions(els.sourceCategory.value || "all");
   const accounts = filteredAccounts();
   els.sourceTotal.textContent = String(accounts.length);
-  const selectedVisible = accounts.filter((account) => state.selectedAccounts.has(account.id)).length;
-  if (els.sourceSelectAll) {
-    els.sourceSelectAll.textContent = accounts.length && selectedVisible === accounts.length ? "取消全选" : "全选";
-  }
   const size = Number(els.sourcePageSize.value || 20);
   const pages = Math.max(1, Math.ceil(accounts.length / size));
   state.sourcePage = Math.min(Math.max(1, state.sourcePage), pages);
   const pageItems = accounts.slice((state.sourcePage - 1) * size, state.sourcePage * size);
+  const selectedVisible = pageItems.filter((account) => state.selectedAccounts.has(account.id)).length;
+  if (els.sourceSelectAll) {
+    els.sourceSelectAll.textContent = pageItems.length && selectedVisible === pageItems.length ? "取消全选" : "全选当前页";
+  }
   els.sourcePageText.textContent = `${state.sourcePage} / ${pages}`;
   els.sourcePrev.disabled = state.sourcePage <= 1;
   els.sourceNext.disabled = state.sourcePage >= pages;
@@ -1440,8 +1459,7 @@ function selectedSourceAccounts() {
   const visibleAccounts = filteredAccounts();
   const visibleSelected = visibleAccounts.filter((account) => state.selectedAccounts.has(account.id));
   if (visibleSelected.length) return visibleSelected;
-  if (sourceFilterScopeActive()) return [];
-  return state.accounts.filter((account) => state.selectedAccounts.has(account.id));
+  return [];
 }
 
 function accountMailVerified(account) {
@@ -3579,8 +3597,8 @@ els.sourceList.addEventListener("change", (event) => {
   else state.selectedAccounts.delete(row.dataset.id);
 });
 els.sourceSelectAll.addEventListener("click", () => {
-  const accounts = filteredAccounts();
-  const allSelected = accounts.every((account) => state.selectedAccounts.has(account.id));
+  const accounts = visibleSourceAccountsForCurrentPage();
+  const allSelected = Boolean(accounts.length) && accounts.every((account) => state.selectedAccounts.has(account.id));
   accounts.forEach((account) => {
     if (allSelected) state.selectedAccounts.delete(account.id);
     else state.selectedAccounts.add(account.id);

@@ -138,6 +138,7 @@ const state = {
   filteredCacheKey: "",
   filteredCacheRows: [],
 };
+const pendingSaveTimers = new Map();
 
 const tempSettings = loadJson(STORAGE_KEYS.tempSettings, {});
 els.tempApi.value = normalizeTempWorkerUrl(tempSettings.base_url || "");
@@ -174,6 +175,16 @@ function saveJson(key, value) {
     }
     throw error;
   }
+}
+
+function scheduleSaveJson(key, value, delay = 180) {
+  const existing = pendingSaveTimers.get(key);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    pendingSaveTimers.delete(key);
+    saveJson(key, value);
+  }, delay);
+  pendingSaveTimers.set(key, timer);
 }
 
 function getWorkspaceId() {
@@ -480,8 +491,8 @@ function normalizeServerMailbox(item, source) {
 }
 
 function saveAll() {
-  saveJson(STORAGE_KEYS.accounts, state.accounts);
-  saveJson(STORAGE_KEYS.categories, state.categories);
+  scheduleSaveJson(STORAGE_KEYS.accounts, state.accounts);
+  scheduleSaveJson(STORAGE_KEYS.categories, state.categories);
 }
 
 function saveTempSettings() {
@@ -1322,7 +1333,7 @@ els.exportBtn.addEventListener("click", () => {
     return;
   }
   downloadTextFile(`gpt-account-manager-mailboxes-${stamp}.txt`, `${rows.map(mailboxCopyLine).join("\n")}\n`);
-  setStatus(`已按一行一个邮箱导出 ${rows.length} 条。`, "ok");
+  setStatus(`已按一行一个邮箱导出 ${rows.length} 条（优先当前选中，否则当前页）。`, "ok");
   toast(`已导出 ${rows.length} 个邮箱 TXT`);
 });
 els.exportBackupBtn.addEventListener("click", () => {

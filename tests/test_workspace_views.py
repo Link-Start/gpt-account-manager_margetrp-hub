@@ -62,6 +62,28 @@ class WorkspaceViewsIntegrationTests(unittest.TestCase):
             save_temp_addresses_map=s.save_temp_addresses,
             save_generic_accounts_map=s.save_generic_accounts,
             save_messages_rows=s.save_messages,
+            append_refresh_result_row=lambda path, auth_file, email, job_id: s.storage_append_refresh_result(
+                path,
+                auth_file,
+                email=email,
+                job_id=job_id,
+                limit=s.REFRESH_RESULTS_LIMIT,
+            ),
+            append_login_history_row=lambda path, job: s.storage_append_login_history_entry(
+                path,
+                job,
+                limit=s.LOGIN_HISTORY_LIMIT,
+            ),
+            save_refresh_results_rows=lambda path, rows: s.storage_save_refresh_result_rows(
+                path,
+                rows,
+                limit=s.REFRESH_RESULTS_LIMIT,
+            ),
+            save_login_history_rows=lambda path, rows: s.storage_save_login_history_rows(
+                path,
+                rows,
+                limit=s.LOGIN_HISTORY_LIMIT,
+            ),
             message_key=s.message_key,
             coerce_text=s.coerce_text,
             iso_now=s.iso_now,
@@ -272,6 +294,237 @@ class WorkspaceViewsIntegrationTests(unittest.TestCase):
         expected_accounts = {"root@example.com", "temp@example.com", "new@example.com"}
         self.assertEqual({row["account"] for row in root_messages}, expected_accounts)
         self.assertEqual({row["account"] for row in workspace_messages}, expected_accounts)
+
+    def test_public_workspace_append_refresh_result_syncs_root_and_workspace_files(self) -> None:
+        public_dir = self.public_workspace_dir()
+        self.write_json(s.REFRESH_RESULTS_FILE, {"results": [{"email": "root@example.com", "job_id": "job-root"}]})
+        self.write_json(public_dir / "refresh_results.json", {"results": [{"email": "public@example.com", "job_id": "job-public"}]})
+
+        auth_file = {"email": "new@example.com", "name": "new@example.com", "plan_type": "plus"}
+        s.workspace_state().append_refresh_result("public", auth_file, email="new@example.com", job_id="job-new")
+
+        root_rows = s.load_refresh_results(s.REFRESH_RESULTS_FILE)
+        workspace_rows = s.load_refresh_results(public_dir / "refresh_results.json")
+        expected = {"root@example.com", "public@example.com", "new@example.com"}
+        self.assertEqual({row["email"] for row in root_rows}, expected)
+        self.assertEqual({row["email"] for row in workspace_rows}, expected)
+
+    def test_public_workspace_append_login_history_syncs_root_and_workspace_files(self) -> None:
+        public_dir = self.public_workspace_dir()
+        self.write_json(s.LOGIN_HISTORY_FILE, {"history": [{"job_id": "job-root", "status": "success", "workspace_id": "public"}]})
+        self.write_json(public_dir / "login_history.json", {"history": [{"job_id": "job-public", "status": "failed", "workspace_id": "public"}]})
+
+        job = {
+            "job_id": "job-new",
+            "email": "new@example.com",
+            "name": "new@example.com",
+            "started_at": "2026-06-08T03:00:00+00:00",
+            "finished_at": "2026-06-08T03:05:00+00:00",
+            "state": "success",
+            "status": "success",
+            "workspace_id": "public",
+            "login_only": False,
+            "site_url": "",
+        }
+        s.workspace_state().append_login_history_entry("public", job)
+
+        root_rows = s.load_login_history(s.LOGIN_HISTORY_FILE)
+        workspace_rows = s.load_login_history(public_dir / "login_history.json")
+        expected = {"job-root", "job-public", "job-new"}
+        self.assertEqual({row["job_id"] for row in root_rows}, expected)
+        self.assertEqual({row["job_id"] for row in workspace_rows}, expected)
+
+    def test_mailbox_service_pickup_import_respects_replace_existing_false(self) -> None:
+        existing = s.MailAccount(
+            email="same@example.com",
+            password="old-pass",
+            client_id="old-client",
+            refresh_token="old-rt",
+        )
+        s.save_workspace_accounts_state("public", {existing.email.lower(): existing})
+
+        result = s.MAILBOX_WORKSPACE_SERVICE.import_pickup_accounts_for_workspace(
+            {"text": "same@example.com----new-pass----new-client----new-rt"},
+            "public",
+            replace_existing=False,
+        )
+
+        accounts = s.load_workspace_accounts("public")
+        self.assertEqual(result["imported"], 0)
+        self.assertEqual(result["updated"], 0)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(accounts["same@example.com"].password, "old-pass")
+        self.assertEqual(accounts["same@example.com"].client_id, "old-client")
+
+    def test_mailbox_service_temp_import_uses_default_worker_url(self) -> None:
+        service = s.MailboxWorkspaceService(
+            coerce_text=s.coerce_text,
+            usable_secret=s.usable_secret,
+            iso_now=s.iso_now,
+            normalize_temp_worker_url=s.normalize_temp_worker_url,
+            default_temp_worker_url="https://temp.example",
+            load_workspace_accounts=s.load_workspace_accounts,
+            load_workspace_temp_addresses=s.load_workspace_temp_addresses,
+            load_workspace_generic_accounts=s.load_workspace_generic_accounts,
+            save_workspace_accounts_state=s.save_workspace_accounts_state,
+            save_workspace_temp_addresses_state=s.save_workspace_temp_addresses_state,
+            save_workspace_generic_accounts_state=s.save_workspace_generic_accounts_state,
+            parse_account_lines=s.parse_account_lines,
+            parse_temp_address_lines=s.parse_temp_address_lines,
+            parse_generic_account_lines=s.parse_generic_account_lines,
+            normalize_generic_account=s.normalize_generic_account,
+            temp_address_from_worker_row=lambda item: s.TempAddress(
+                email=s.coerce_text(item.get("address") or item.get("email")).lower(),
+                jwt=s.coerce_text(item.get("jwt")),
+            ),
+        )
+
+        result = service.import_temp_addresses_for_workspace(
+            {"text": "temp@example.com----jwt-value"},
+            "public",
+            replace_existing=True,
+        )
+
+        addresses = s.load_workspace_temp_addresses("public")
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(addresses["temp@example.com"].base_url, "https://temp.example")
+
+    def test_mailbox_service_delete_workspace_mail_credentials_removes_all_sources(self) -> None:
+        s.save_workspace_accounts_state("public", {
+            "same@example.com": s.MailAccount(
+                email="same@example.com",
+                password="ms-pass",
+                client_id="ms-client",
+                refresh_token="ms-rt",
+            )
+        })
+        s.save_workspace_temp_addresses_state("public", {
+            "same@example.com": s.TempAddress(
+                email="same@example.com",
+                jwt="temp-jwt",
+            )
+        })
+        s.save_workspace_generic_accounts_state("public", {
+            "same@example.com": s.GenericMailAccount(
+                email="same@example.com",
+                password="generic-pass",
+            )
+        })
+
+        result = s.MAILBOX_WORKSPACE_SERVICE.delete_workspace_mail_credentials_for_workspace(
+            {"emails": ["same@example.com"]},
+            "public",
+        )
+
+        self.assertEqual(result["deleted"]["microsoft"], 1)
+        self.assertEqual(result["deleted"]["temp"], 1)
+        self.assertEqual(result["deleted"]["generic"], 1)
+        self.assertNotIn("same@example.com", s.load_workspace_accounts("public"))
+        self.assertNotIn("same@example.com", s.load_workspace_temp_addresses("public"))
+        self.assertNotIn("same@example.com", s.load_workspace_generic_accounts("public"))
+
+    def test_mailbox_service_delete_pickup_accounts_keeps_other_sources(self) -> None:
+        s.save_workspace_accounts_state("public", {
+            "same@example.com": s.MailAccount(
+                email="same@example.com",
+                password="ms-pass",
+                client_id="ms-client",
+                refresh_token="ms-rt",
+            )
+        })
+        s.save_workspace_temp_addresses_state("public", {
+            "same@example.com": s.TempAddress(
+                email="same@example.com",
+                jwt="temp-jwt",
+            )
+        })
+
+        result = s.MAILBOX_WORKSPACE_SERVICE.delete_pickup_accounts_for_workspace(
+            {"emails": ["same@example.com"]},
+            "public",
+        )
+
+        self.assertEqual(result["deleted"], 1)
+        self.assertNotIn("same@example.com", s.load_workspace_accounts("public"))
+        self.assertIn("same@example.com", s.load_workspace_temp_addresses("public"))
+
+    def test_workspace_state_append_refresh_result_uses_activity_lock_for_non_public(self) -> None:
+        target_path = s.workspace_file("team-a1", "refresh_results.json")
+        calls: list[tuple[bool, Path, str]] = []
+
+        state = s.WorkspaceState(
+            workspaces_dir=s.WORKSPACES_DIR,
+            views=s.WORKSPACE_VIEWS,
+            save_accounts_map=s.save_accounts,
+            save_temp_addresses_map=s.save_temp_addresses,
+            save_generic_accounts_map=s.save_generic_accounts,
+            save_messages_rows=s.save_messages,
+            append_refresh_result_row=lambda path, auth_file, email, job_id: None,
+            append_login_history_row=lambda path, job: None,
+            save_refresh_results_rows=lambda path, rows: None,
+            save_login_history_rows=lambda path, rows: None,
+            message_key=s.message_key,
+            coerce_text=s.coerce_text,
+            iso_now=s.iso_now,
+            row_fallback_key=s.json_row_fallback_key,
+        )
+        real_lock = state._activity_lock()
+
+        def locked_append(path, auth_file, email, job_id):
+            calls.append((real_lock._is_owned(), path, email))
+
+        object.__setattr__(state, "append_refresh_result_row", locked_append)
+
+        state.append_refresh_result("team-a1", {"email": "user@example.com"}, email="user@example.com", job_id="job-1")
+
+        self.assertEqual(calls, [(True, target_path, "user@example.com")])
+
+    def test_public_workspace_append_refresh_result_refuses_to_overwrite_when_one_side_is_corrupt(self) -> None:
+        public_dir = self.public_workspace_dir()
+        self.write_json(s.REFRESH_RESULTS_FILE, {"results": [{"email": "root@example.com", "job_id": "job-root"}]})
+        corrupt_path = public_dir / "refresh_results.json"
+        corrupt_path.parent.mkdir(parents=True, exist_ok=True)
+        corrupt_path.write_text("{bad json", encoding="utf-8")
+
+        with self.assertRaises(RuntimeError):
+            s.workspace_state().append_refresh_result(
+                "public",
+                {"email": "new@example.com", "name": "new@example.com"},
+                email="new@example.com",
+                job_id="job-new",
+            )
+
+        root_rows = s.load_refresh_results(s.REFRESH_RESULTS_FILE)
+        self.assertEqual({row["email"] for row in root_rows}, {"root@example.com"})
+        self.assertEqual(corrupt_path.read_text(encoding="utf-8"), "{bad json")
+
+    def test_public_workspace_append_login_history_refuses_to_overwrite_when_one_side_is_corrupt(self) -> None:
+        public_dir = self.public_workspace_dir()
+        self.write_json(s.LOGIN_HISTORY_FILE, {"history": [{"job_id": "job-root", "status": "success", "workspace_id": "public"}]})
+        corrupt_path = public_dir / "login_history.json"
+        corrupt_path.parent.mkdir(parents=True, exist_ok=True)
+        corrupt_path.write_text("{bad json", encoding="utf-8")
+
+        with self.assertRaises(RuntimeError):
+            s.workspace_state().append_login_history_entry(
+                "public",
+                {
+                    "job_id": "job-new",
+                    "email": "new@example.com",
+                    "name": "new@example.com",
+                    "started_at": "2026-06-08T03:00:00+00:00",
+                    "finished_at": "2026-06-08T03:05:00+00:00",
+                    "state": "success",
+                    "status": "success",
+                    "workspace_id": "public",
+                    "login_only": False,
+                    "site_url": "",
+                },
+            )
+
+        root_rows = s.load_login_history(s.LOGIN_HISTORY_FILE)
+        self.assertEqual({row["job_id"] for row in root_rows}, {"job-root"})
+        self.assertEqual(corrupt_path.read_text(encoding="utf-8"), "{bad json")
 
 
 if __name__ == "__main__":

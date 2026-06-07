@@ -284,6 +284,7 @@ const state = {
   mailboxControlsCollapsed: loadJson(STORAGE_KEYS.mailboxControlsCollapsed, true) !== false,
   mailboxSyncRequestId: 0,
 };
+const pendingSaveTimers = new Map();
 
 const cpaSettings = loadJson(STORAGE_KEYS.cpaSettings, {});
 const tempSettings = loadJson(STORAGE_KEYS.tempSettings, {});
@@ -335,6 +336,16 @@ function saveJson(key, value) {
     }
     throw error;
   }
+}
+
+function scheduleSaveJson(key, value, delay = 180) {
+  const existing = pendingSaveTimers.get(key);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    pendingSaveTimers.delete(key);
+    saveJson(key, value);
+  }, delay);
+  pendingSaveTimers.set(key, timer);
 }
 
 function applyMailboxControlsState() {
@@ -649,7 +660,7 @@ function applyFetchDiagnostics(results) {
     Object.assign(account, diagnostic);
     changed = true;
   });
-  if (changed) saveJson(STORAGE_KEYS.accounts, state.accounts);
+  if (changed) scheduleSaveJson(STORAGE_KEYS.accounts, state.accounts);
   return { ok, failed };
 }
 
@@ -1836,12 +1847,7 @@ function renderDetail(message) {
 }
 
 function payloadForSync() {
-  const filtered = filteredAccounts();
-  const selectedVisible = filtered.filter((account) => state.selected.has(account.id));
-  const activeVisible = state.activeMailboxId
-    ? filtered.filter((account) => account.id === state.activeMailboxId)
-    : [];
-  const targets = selectedVisible.length ? selectedVisible : (activeVisible.length ? activeVisible : filtered);
+  const targets = syncTargetAccounts();
   const source = els.sourceFilter.value;
   const includeTemp = source === "all" || source === "temp";
   const includeMicrosoft = source === "all" || source === "microsoft";
@@ -1874,6 +1880,26 @@ function payloadForSync() {
       .filter((account) => account.source === "generic")
       .map(genericAccountPayload) : [],
   };
+}
+
+function syncTargetAccounts() {
+  const filtered = filteredAccounts();
+  const selectedVisible = filtered.filter((account) => state.selected.has(account.id));
+  if (selectedVisible.length) return selectedVisible;
+  const active = filtered.find((account) => account.id === state.activeMailboxId);
+  if (active) return [active];
+  return filtered;
+}
+
+function syncScopeLabel(targets) {
+  if (!targets.length) return "当前筛选";
+  const filtered = filteredAccounts();
+  const selectedVisible = filtered.filter((account) => state.selected.has(account.id));
+  if (selectedVisible.length) return `勾选邮箱 ${targets.length} 个`;
+  if (targets.length === 1 && state.activeMailboxId && targets[0]?.id === state.activeMailboxId) {
+    return `当前邮箱 ${targets[0].email || ""}`;
+  }
+  return `当前筛选 ${targets.length} 个`;
 }
 
 
@@ -3066,6 +3092,7 @@ function toggleMailboxFilter(account) {
     state.activeMailboxId = account.id;
     state.activeMailboxEmail = account.email || "";
   }
+  state.selected.clear();
   state.page = 1;
   state.activeMessageKey = "";
   renderAccounts();
@@ -3101,6 +3128,8 @@ async function syncMail() {
     toast(localCredentialHint());
     return;
   }
+  pruneSelectedMailboxesToCurrentFilter();
+  syncActiveMailboxSelection();
   const payload = payloadForSync();
   const total = payload.temp_addresses.length + payload.accounts.length + payload.generic_accounts.length;
   if (!total) {
@@ -3126,6 +3155,7 @@ async function syncMail() {
     const requestPayload = clientPayloadForSync(payload);
     requestPayload.provider = provider;
     setInlineProgress(els.mailProgress, 20, "请求中");
+    addClientLog(`收取范围：${syncScopeLabel(syncTargetAccounts())}`, "info");
     addClientLog(`刷新请求：${requestPayload.accounts?.length || 0} 个 Outlook，${requestPayload.temp_addresses?.length || 0} 个临时邮箱，${requestPayload.generic_accounts?.length || 0} 个其他邮箱，方式 ${provider}`, "info");
     addClientLog(payloadHasMaskedCredentials(payload)
       ? "本次使用当前工作区保存的邮箱凭证补齐打码账号"

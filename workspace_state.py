@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -11,7 +13,10 @@ MapSaver = Callable[[dict[str, Any], Path], None]
 TextCoercer = Callable[[Any], str]
 RowKeyBuilder = Callable[[dict[str, Any]], str]
 RowsSaver = Callable[[list[dict[str, Any]], Path], None]
+ActivityAppender = Callable[[Path, dict[str, Any]], None]
+RefreshAppender = Callable[[Path, dict[str, Any], str, str], None]
 MessageFilter = Callable[[list[dict[str, Any]], dict[str, Any]], list[dict[str, Any]]]
+ActivityRowsSaver = Callable[[Path, list[dict[str, Any]]], None]
 IsoNowFn = Callable[[], str]
 
 
@@ -23,10 +28,57 @@ class WorkspaceState:
     save_temp_addresses_map: MapSaver
     save_generic_accounts_map: MapSaver
     save_messages_rows: RowsSaver
+    append_refresh_result_row: RefreshAppender
+    append_login_history_row: ActivityAppender
+    save_refresh_results_rows: ActivityRowsSaver
+    save_login_history_rows: ActivityRowsSaver
     message_key: RowKeyBuilder
     coerce_text: TextCoercer
     iso_now: IsoNowFn
     row_fallback_key: RowKeyBuilder = json_row_fallback_key
+
+    def _activity_lock(self) -> threading.RLock:
+        state = self.__dict__.get("_activity_write_lock")
+        if state is None:
+            state = threading.RLock()
+            object.__setattr__(self, "_activity_write_lock", state)
+        return state
+
+    def _safe_activity_rows(
+        self,
+        path: Path,
+        *,
+        list_key: str,
+    ) -> list[dict[str, Any]]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            return []
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise RuntimeError(f"activity file is unreadable: {path}") from exc
+        rows = raw.get(list_key) if isinstance(raw, dict) else raw
+        return [item for item in rows if isinstance(item, dict)] if isinstance(rows, list) else []
+
+    def _load_public_refresh_results_for_write(self) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        for path in self.refresh_results_write_paths("public"):
+            for row in self._safe_activity_rows(path, list_key="results"):
+                key = (
+                    self.coerce_text(row.get("email")).lower()
+                    or self.coerce_text(row.get("job_id"))
+                    or self.row_fallback_key(row)
+                )
+                merged[key] = row
+        return list(merged.values())
+
+    def _load_public_login_history_for_write(self) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        for path in self.login_history_write_paths("public"):
+            for row in self._safe_activity_rows(path, list_key="history"):
+                key = self.coerce_text(row.get("job_id")) or self.row_fallback_key(row)
+                merged[key] = row
+        return list(merged.values())
 
     def normalize_workspace_id(self, workspace_id: Any) -> str:
         return self.views.normalize_workspace_id(workspace_id)
@@ -43,11 +95,31 @@ class WorkspaceState:
     def messages_path(self, workspace_id: str) -> Path:
         return self.views.workspace_file(workspace_id, "messages.json")
 
+    def refresh_results_path(self, workspace_id: str) -> Path:
+        return self.views.workspace_file(workspace_id, "refresh_results.json")
+
+    def login_history_path(self, workspace_id: str) -> Path:
+        return self.views.workspace_file(workspace_id, "login_history.json")
+
     def message_write_paths(self, workspace_id: str) -> list[Path]:
         workspace = self.normalize_workspace_id(workspace_id)
         paths = [self.messages_path(workspace)]
         if workspace == "public":
             paths.insert(0, self.views.public_messages_file)
+        return paths
+
+    def refresh_results_write_paths(self, workspace_id: str) -> list[Path]:
+        workspace = self.normalize_workspace_id(workspace_id)
+        paths = [self.refresh_results_path(workspace)]
+        if workspace == "public":
+            paths.insert(0, self.views.public_refresh_results_file)
+        return paths
+
+    def login_history_write_paths(self, workspace_id: str) -> list[Path]:
+        workspace = self.normalize_workspace_id(workspace_id)
+        paths = [self.login_history_path(workspace)]
+        if workspace == "public":
+            paths.insert(0, self.views.public_login_history_file)
         return paths
 
     def load_accounts(self, workspace_id: str) -> dict[str, Any]:
@@ -132,6 +204,52 @@ class WorkspaceState:
             workspace_id,
             row_key=lambda row: self.coerce_text(row.get("job_id")) or self.row_fallback_key(row),
         )
+
+    def append_refresh_result(self, workspace_id: str, auth_file: dict[str, Any], *, email: str = "", job_id: str = "") -> None:
+        workspace = self.normalize_workspace_id(workspace_id)
+        with self._activity_lock():
+            if workspace != "public":
+                self.append_refresh_result_row(self.refresh_results_path(workspace), auth_file, email, job_id)
+                return
+            merged = self._load_public_refresh_results_for_write()
+            entry = {
+                "email": email or auth_file.get("email", ""),
+                "name": auth_file.get("name", ""),
+                "job_id": job_id,
+                "refreshed_at": self.iso_now(),
+                "plan_type": auth_file.get("plan_type", ""),
+                "auth_file": auth_file,
+            }
+            email_lower = self.coerce_text(entry.get("email")).lower()
+            merged = [row for row in merged if self.coerce_text(row.get("email")).lower() != email_lower]
+            merged.append(entry)
+            for path in self.refresh_results_write_paths(workspace):
+                self.save_refresh_results_rows(path, merged)
+
+    def append_login_history_entry(self, workspace_id: str, job: dict[str, Any]) -> None:
+        workspace = self.normalize_workspace_id(workspace_id)
+        with self._activity_lock():
+            if workspace != "public":
+                self.append_login_history_row(self.login_history_path(workspace), job)
+                return
+            merged = self._load_public_login_history_for_write()
+            entry = {
+                "job_id": job.get("job_id"),
+                "email": job.get("email"),
+                "name": job.get("name"),
+                "started_at": job.get("started_at"),
+                "finished_at": job.get("finished_at"),
+                "state": job.get("state"),
+                "status": job.get("status"),
+                "error": job.get("error"),
+                "workspace_id": job.get("workspace_id"),
+                "login_only": job.get("login_only"),
+                "site_url": job.get("site_url"),
+            }
+            merged = [row for row in merged if row.get("job_id") != entry.get("job_id")]
+            merged.append(entry)
+            for path in self.login_history_write_paths(workspace):
+                self.save_login_history_rows(path, merged)
 
     def save_accounts_state(self, workspace_id: str, accounts: dict[str, Any]) -> None:
         workspace = self.normalize_workspace_id(workspace_id)

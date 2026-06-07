@@ -86,6 +86,8 @@ from dashboard_stats import (
     dashboard_message_recipient as build_dashboard_message_recipient,
     dashboard_stats_response as build_dashboard_stats_response,
 )
+from mail_fetch_service import MailFetchService
+from mailbox_workspace_service import MailboxWorkspaceService
 from workspace_state import WorkspaceState
 from workspace_views import WorkspaceViews, json_row_fallback_key
 
@@ -758,21 +760,12 @@ def load_refresh_results(path: Path = REFRESH_RESULTS_FILE) -> list[dict[str, An
 def save_refresh_results(results: list[dict[str, Any]], path: Path = REFRESH_RESULTS_FILE) -> None:
     storage_save_refresh_result_rows(path, results, limit=REFRESH_RESULTS_LIMIT)
 
-
-def append_refresh_result(auth_file: dict[str, Any], email: str = "", job_id: str = "", path: Path = REFRESH_RESULTS_FILE) -> None:
-    storage_append_refresh_result(path, auth_file, email=email, job_id=job_id, limit=REFRESH_RESULTS_LIMIT)
-
-
 def load_login_history(path: Path = LOGIN_HISTORY_FILE) -> list[dict[str, Any]]:
     return storage_load_login_history_rows(path)
 
 
 def save_login_history(history: list[dict[str, Any]], path: Path = LOGIN_HISTORY_FILE) -> None:
     storage_save_login_history_rows(path, history, limit=LOGIN_HISTORY_LIMIT)
-
-
-def append_login_history_entry(job: dict[str, Any], path: Path = LOGIN_HISTORY_FILE) -> None:
-    storage_append_login_history_entry(path, job, limit=LOGIN_HISTORY_LIMIT)
 
 
 WORKSPACE_VIEWS = WorkspaceViews(
@@ -2852,12 +2845,55 @@ WORKSPACE_STATE = WorkspaceState(
     save_temp_addresses_map=save_temp_addresses,
     save_generic_accounts_map=save_generic_accounts,
     save_messages_rows=save_messages,
+    append_refresh_result_row=lambda path, auth_file, email, job_id: storage_append_refresh_result(
+        path,
+        auth_file,
+        email=email,
+        job_id=job_id,
+        limit=REFRESH_RESULTS_LIMIT,
+    ),
+    append_login_history_row=lambda path, job: storage_append_login_history_entry(
+        path,
+        job,
+        limit=LOGIN_HISTORY_LIMIT,
+    ),
+    save_refresh_results_rows=lambda path, rows: storage_save_refresh_result_rows(
+        path,
+        rows,
+        limit=REFRESH_RESULTS_LIMIT,
+    ),
+    save_login_history_rows=lambda path, rows: storage_save_login_history_rows(
+        path,
+        rows,
+        limit=LOGIN_HISTORY_LIMIT,
+    ),
     message_key=message_key,
     coerce_text=coerce_text,
     iso_now=iso_now,
     row_fallback_key=json_row_fallback_key,
 )
 
+MAILBOX_WORKSPACE_SERVICE = MailboxWorkspaceService(
+    coerce_text=coerce_text,
+    usable_secret=usable_secret,
+    iso_now=iso_now,
+    normalize_temp_worker_url=normalize_temp_worker_url,
+    default_temp_worker_url=TEMP_WORKER_URL,
+    load_workspace_accounts=load_workspace_accounts,
+    load_workspace_temp_addresses=load_workspace_temp_addresses,
+    load_workspace_generic_accounts=load_workspace_generic_accounts,
+    save_workspace_accounts_state=save_workspace_accounts_state,
+    save_workspace_temp_addresses_state=save_workspace_temp_addresses_state,
+    save_workspace_generic_accounts_state=save_workspace_generic_accounts_state,
+    parse_account_lines=parse_account_lines,
+    parse_temp_address_lines=parse_temp_address_lines,
+    parse_generic_account_lines=parse_generic_account_lines,
+    normalize_generic_account=normalize_generic_account,
+    temp_address_from_worker_row=lambda item: TempAddress(
+        email=coerce_text(item.get("address") or item.get("email")).lower(),
+        jwt=coerce_text(item.get("jwt")),
+    ),
+)
 
 def parse_nested_json_value(value: Any, depth: int = 4) -> Any:
     current = value
@@ -2988,6 +3024,29 @@ def validate_configured_base_url(base_url: str) -> None:
         raise RuntimeError("configured temp worker URL must use http or https")
     if not parsed.hostname:
         raise RuntimeError("configured temp worker URL host missing")
+
+
+MAIL_FETCH_SERVICE = MailFetchService(
+    coerce_text=coerce_text,
+    coerce_port=coerce_port,
+    usable_secret=usable_secret,
+    normalize_temp_worker_url=normalize_temp_worker_url,
+    normalize_base_url=normalize_base_url,
+    normalize_generic_mail_mode=normalize_generic_mail_mode,
+    validate_configured_base_url=validate_configured_base_url,
+    parse_account_lines=parse_account_lines,
+    parse_temp_address_lines=parse_temp_address_lines,
+    parse_generic_account_lines=parse_generic_account_lines,
+    mail_account_factory=MailAccount,
+    temp_address_factory=TempAddress,
+    generic_account_factory=GenericMailAccount,
+    normalize_generic_account=normalize_generic_account,
+    temp_worker_url=TEMP_WORKER_URL,
+    temp_site_password=TEMP_SITE_PASSWORD,
+    run_mail_fetch_jobs=run_mail_fetch_jobs,
+    message_sort_value=message_sort_value,
+    mail_type_labels=MAIL_TYPE_LABELS,
+)
 
 
 def validate_cpa_base_url(base_url: str) -> None:
@@ -6076,11 +6135,11 @@ def complete_oauth_code_payload(payload: dict[str, Any], code: str, code_verifie
         payload.get("_workspace_id"),
         payload.get("workspace_id") or payload.get("workspaceId"),
     )
-    append_refresh_result(
+    workspace_state().append_refresh_result(
+        refresh_workspace,
         auth_file,
         email=auth_file.get("email") or email_addr,
         job_id=coerce_text(payload.get("job_id")),
-        path=workspace_file(refresh_workspace, "refresh_results.json"),
     )
     row = payload.get("row") if isinstance(payload.get("row"), dict) else {}
     base_url = coerce_text(payload.get("base_url") or payload.get("baseUrl") or row.get("cpa_base_url") or row.get("base_url"))
@@ -6713,9 +6772,9 @@ def set_login_job_status(job_id: str, status: str, **updates: Any) -> None:
         if is_terminal_refresh_state(next_state):
             job["finished_at"] = job["updated_at"]
             try:
-                append_login_history_entry(
+                workspace_state().append_login_history_entry(
+                    job.get("workspace_id", "public"),
                     job,
-                    workspace_file(job.get("workspace_id", "public"), "login_history.json"),
                 )
             except Exception:
                 pass
@@ -8074,11 +8133,11 @@ def run_cpa_login_job(job_id: str, payload: dict[str, Any]) -> None:
 
         # 保存刷新结果到磁盘
         try:
-            append_refresh_result(
+            workspace_state().append_refresh_result(
+                payload.get("_workspace_id", "public"),
                 auth_file,
                 email=auth_file.get("email") or payload.get("email"),
                 job_id=job_id,
-                path=workspace_file(payload.get("_workspace_id", "public"), "refresh_results.json"),
             )
             append_login_log(job_id, "已保存登录凭证至服务器", "info", "persist_success")
         except Exception as e:
@@ -8251,275 +8310,30 @@ def get_cpa_login_job(job_id: str, workspace_id: str = "") -> dict[str, Any]:
 
 
 def login_mail_credential_counts(payload: dict[str, Any]) -> dict[str, int]:
-    microsoft = 0
-    for item in payload.get("accounts", []):
-        if not isinstance(item, dict):
-            continue
-        if usable_secret(item.get("client_id")) and usable_secret(item.get("refresh_token")):
-            microsoft += 1
-    temp = 0
-    for item in payload.get("temp_addresses", []):
-        if not isinstance(item, dict):
-            continue
-        if usable_secret(item.get("jwt")):
-            temp += 1
-    generic = 0
-    for item in payload.get("generic_accounts", []):
-        if not isinstance(item, dict):
-            continue
-        if usable_secret(item.get("password") or item.get("token")):
-            generic += 1
-    return {"microsoft": microsoft, "temp": temp, "generic": generic, "total": microsoft + temp + generic}
+    return MAILBOX_WORKSPACE_SERVICE.login_mail_credential_counts(payload)
 
 
 def hydrate_login_mail_credentials(payload: dict[str, Any], workspace_id: str = "public") -> dict[str, int]:
-    selected_emails = [
-        coerce_text(item).lower()
-        for item in payload.get("emails", [])
-        if "@" in coerce_text(item)
-    ]
-    email_addr = coerce_text(payload.get("email")).lower()
-    if "@" in email_addr:
-        selected_emails.append(email_addr)
-    selected_emails = list(dict.fromkeys(selected_emails))
-    if not selected_emails:
-        return {"microsoft": 0, "temp": 0, "generic": 0, "added": 0, "updated": 0}
-    accounts = [item for item in payload.get("accounts", []) if isinstance(item, dict)]
-    temp_addresses = [item for item in payload.get("temp_addresses", []) if isinstance(item, dict)]
-    generic_accounts = [item for item in payload.get("generic_accounts", []) if isinstance(item, dict)]
-    added = 0
-    updated = 0
-
-    stored_accounts = load_workspace_accounts(workspace_id)
-    stored_temp_addresses = load_workspace_temp_addresses(workspace_id)
-    stored_generic_accounts = load_workspace_generic_accounts(workspace_id)
-
-    def same_email(item: dict[str, Any], target: str) -> bool:
-        return coerce_text(item.get("email")).lower() == target
-
-    for target_email in selected_emails:
-        if any(same_email(item, target_email) and usable_secret(item.get("client_id")) and usable_secret(item.get("refresh_token")) for item in accounts):
-            continue
-        stored = stored_accounts.get(target_email)
-        if stored and usable_secret(stored.client_id) and usable_secret(stored.refresh_token):
-            stored_item = {
-                "email": stored.email,
-                "password": stored.password,
-                "client_id": stored.client_id,
-                "refresh_token": stored.refresh_token,
-                "label": stored.label,
-            }
-            replaced = False
-            for index, item in enumerate(accounts):
-                if same_email(item, target_email):
-                    accounts[index] = {**item, **stored_item}
-                    replaced = True
-                    updated += 1
-                    break
-            if not replaced:
-                accounts.append(stored_item)
-                added += 1
-
-    for target_email in selected_emails:
-        if any(same_email(item, target_email) and usable_secret(item.get("jwt")) for item in temp_addresses):
-            continue
-        stored_temp = stored_temp_addresses.get(target_email)
-        if stored_temp and usable_secret(stored_temp.jwt):
-            stored_item = {
-                "email": stored_temp.email,
-                "jwt": stored_temp.jwt,
-                "base_url": stored_temp.base_url or TEMP_WORKER_URL,
-                "site_password": stored_temp.site_password,
-                "label": stored_temp.label,
-            }
-            replaced = False
-            for index, item in enumerate(temp_addresses):
-                if same_email(item, target_email):
-                    temp_addresses[index] = {**item, **stored_item}
-                    replaced = True
-                    updated += 1
-                    break
-            if not replaced:
-                temp_addresses.append(stored_item)
-                added += 1
-
-    for target_email in selected_emails:
-        if any(same_email(item, target_email) and usable_secret(item.get("password") or item.get("token")) for item in generic_accounts):
-            continue
-        stored_generic = stored_generic_accounts.get(target_email)
-        if stored_generic and usable_secret(stored_generic.password):
-            stored_item = {
-                "email": stored_generic.email,
-                "password": stored_generic.password,
-                "username": stored_generic.username,
-                "mode": stored_generic.mode,
-                "imap_host": stored_generic.imap_host,
-                "imap_port": stored_generic.imap_port,
-                "pop3_host": stored_generic.pop3_host,
-                "pop3_port": stored_generic.pop3_port,
-                "label": stored_generic.label,
-            }
-            replaced = False
-            for index, item in enumerate(generic_accounts):
-                if same_email(item, target_email):
-                    generic_accounts[index] = {**item, **stored_item}
-                    replaced = True
-                    updated += 1
-                    break
-            if not replaced:
-                generic_accounts.append(stored_item)
-                added += 1
-
-    payload["accounts"] = accounts
-    payload["temp_addresses"] = temp_addresses
-    payload["generic_accounts"] = generic_accounts
-    counts = login_mail_credential_counts(payload)
-    return {**counts, "added": added, "updated": updated}
+    return MAILBOX_WORKSPACE_SERVICE.hydrate_payload_with_workspace_mail_credentials(payload, workspace_id)
 
 
 def transient_mail_accounts(payload: dict[str, Any]) -> tuple[list[MailAccount], list[str]]:
-    accounts: list[MailAccount] = []
-    errors: list[str] = []
-    if payload.get("accounts_text"):
-        parsed, parsed_errors = parse_account_lines(str(payload.get("accounts_text", "")))
-        accounts.extend(parsed)
-        errors.extend(parsed_errors)
-    for idx, item in enumerate(payload.get("accounts", []), start=1):
-        if not isinstance(item, dict):
-            errors.append(f"Account {idx}: invalid object")
-            continue
-        email_addr = coerce_text(item.get("email"))
-        client_id = coerce_text(item.get("client_id"))
-        refresh_token = coerce_text(item.get("refresh_token"))
-        if "@" not in email_addr or not usable_secret(client_id) or not usable_secret(refresh_token):
-            errors.append(f"Account {idx}: missing email/client_id/refresh_token")
-            continue
-        accounts.append(MailAccount(
-            email=email_addr,
-            password=coerce_text(item.get("password")),
-            client_id=client_id,
-            refresh_token=refresh_token,
-            label=coerce_text(item.get("label") or item.get("category")),
-        ))
-    return accounts, errors
+    return MAIL_FETCH_SERVICE.transient_mail_accounts(payload)
 
 
 def transient_temp_addresses(payload: dict[str, Any]) -> tuple[list[TempAddress], list[str]]:
-    addresses: list[TempAddress] = []
-    errors: list[str] = []
-    if payload.get("temp_text"):
-        parsed, parsed_errors = parse_temp_address_lines(str(payload.get("temp_text", "")))
-        addresses.extend(parsed)
-        errors.extend(parsed_errors)
-    for idx, item in enumerate(payload.get("temp_addresses", []), start=1):
-        if not isinstance(item, dict):
-            errors.append(f"Temp address {idx}: invalid object")
-            continue
-        email_addr = coerce_text(item.get("email"))
-        if "@" not in email_addr:
-            errors.append(f"Temp address {idx}: invalid email")
-            continue
-        if not usable_secret(item.get("jwt")):
-            errors.append(f"Temp address {idx}: missing jwt")
-            continue
-        base_url = normalize_temp_worker_url(coerce_text(item.get("base_url") or item.get("baseUrl") or TEMP_WORKER_URL))
-        site_password = coerce_text(item.get("site_password") or item.get("sitePassword") or TEMP_SITE_PASSWORD)
-        addresses.append(TempAddress(
-            email=email_addr,
-            jwt=coerce_text(item.get("jwt")),
-            base_url=base_url,
-            site_password=site_password,
-            label=coerce_text(item.get("label") or item.get("category")),
-        ))
-    return addresses, errors
+    return MAIL_FETCH_SERVICE.transient_temp_addresses(payload)
 
 
 def transient_generic_accounts(payload: dict[str, Any]) -> tuple[list[GenericMailAccount], list[str]]:
-    accounts: list[GenericMailAccount] = []
-    errors: list[str] = []
-    if payload.get("generic_text"):
-        parsed, parsed_errors = parse_generic_account_lines(str(payload.get("generic_text", "")))
-        accounts.extend(parsed)
-        errors.extend(parsed_errors)
-    for idx, item in enumerate(payload.get("generic_accounts", []), start=1):
-        if not isinstance(item, dict):
-            errors.append(f"Generic account {idx}: invalid object")
-            continue
-        email_addr = coerce_text(item.get("email"))
-        password = coerce_text(item.get("password") or item.get("token"))
-        if "@" not in email_addr:
-            errors.append(f"Generic account {idx}: invalid email")
-            continue
-        if not usable_secret(password):
-            errors.append(f"Generic account {idx}: missing password/token")
-            continue
-        accounts.append(normalize_generic_account(GenericMailAccount(
-            email=email_addr,
-            password=password,
-            username=coerce_text(item.get("username") or item.get("user")),
-            mode=coerce_text(item.get("mode") or item.get("provider")),
-            imap_host=coerce_text(item.get("imap_host") or item.get("imapHost") or item.get("base_url") or item.get("baseUrl") or item.get("api_url") or item.get("apiUrl")),
-            imap_port=coerce_port(item.get("imap_port") or item.get("imapPort"), 993),
-            pop3_host=coerce_text(item.get("pop3_host") or item.get("pop3Host")),
-            pop3_port=coerce_port(item.get("pop3_port") or item.get("pop3Port"), 995),
-            label=coerce_text(item.get("label") or item.get("category")),
-        )))
-    return accounts, errors
+    return MAIL_FETCH_SERVICE.transient_generic_accounts(payload)
 
 
 def fetch_transient_client_mail(
     payload: dict[str, Any],
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    accounts, account_errors = transient_mail_accounts(payload)
-    temp_addresses, temp_errors = transient_temp_addresses(payload)
-    generic_accounts, generic_errors = transient_generic_accounts(payload)
-    if temp_addresses and not TEMP_WORKER_URL and any(not address.base_url for address in temp_addresses):
-        raise RuntimeError("GPT_ACCOUNT_MANAGER_TEMP_WORKER_URL is required for temp mailbox refresh")
-    if temp_addresses:
-        for address in temp_addresses:
-            validate_configured_base_url(normalize_temp_worker_url(address.base_url or TEMP_WORKER_URL))
-    for account in generic_accounts:
-        if normalize_generic_mail_mode(account.mode) in {"cloudmail", "luckmail", "inbucket"} and account.imap_host:
-            validate_configured_base_url(normalize_base_url(account.imap_host))
-    selected = {email.lower() for email in payload.get("emails", []) if isinstance(email, str)}
-    source = coerce_text(payload.get("source") or "all").lower()
-    provider = coerce_text(payload.get("provider") or "auto").lower()
-    sender_filter = coerce_text(payload.get("sender_filter"))
-    limit = max(1, min(int(payload.get("limit", 20) or 20), 50))
-    jobs: list[tuple[str, MailAccount | TempAddress | GenericMailAccount, str, int, str]] = []
-
-    if source in {"all", "microsoft"}:
-        for account in accounts:
-            if selected and account.email.lower() not in selected:
-                continue
-            jobs.append(("microsoft", account, provider, limit, sender_filter))
-    if source in {"all", "temp"}:
-        for address in temp_addresses:
-            if selected and address.email.lower() not in selected:
-                continue
-            jobs.append(("temp", address, provider, limit, sender_filter))
-    if source in {"all", "generic"}:
-        for account in generic_accounts:
-            if selected and account.email.lower() not in selected:
-                continue
-            jobs.append(("generic", account, provider, limit, sender_filter))
-
-    results = run_mail_fetch_jobs(jobs, progress_callback=progress_callback)
-    messages = [message for result in results for message in result.get("messages", [])]
-    failed_results = [result for result in results if not result.get("ok")]
-    return {
-        "results": results,
-        "messages": sorted(messages, key=message_sort_value, reverse=True),
-        "errors": account_errors + temp_errors + generic_errors,
-        "summary": {
-            "total": len(results),
-            "ok": len(results) - len(failed_results),
-            "failed": len(failed_results),
-            "messages": len(messages),
-        },
-        "types": MAIL_TYPE_LABELS,
-    }
+    return MAIL_FETCH_SERVICE.fetch(payload, progress_callback=progress_callback)
 
 
 def mail_fetch_job_public(job: dict[str, Any]) -> dict[str, Any]:
@@ -8564,7 +8378,11 @@ def trim_mail_fetch_jobs() -> None:
 def run_client_mail_fetch_job(job_id: str, payload: dict[str, Any], workspace_id: str) -> None:
     try:
         workspace = normalize_workspace_id(workspace_id)
-        result = fetch_transient_client_mail(payload, progress_callback=lambda progress: set_mail_fetch_job(job_id, **progress))
+        prepared = payload.get("_prepared_mail_fetch_request")
+        if prepared is not None:
+            result = MAIL_FETCH_SERVICE.fetch_prepared(prepared, progress_callback=lambda progress: set_mail_fetch_job(job_id, **progress))
+        else:
+            result = fetch_transient_client_mail(payload, progress_callback=lambda progress: set_mail_fetch_job(job_id, **progress))
         messages = result.get("messages", []) if isinstance(result.get("messages"), list) else []
         workspace_state().upsert_messages_state(workspace, messages)
         set_mail_fetch_job(job_id, status="success", processed=int(result.get("summary", {}).get("total") or 0), current_email="", result=lightweight_fetch_result(result, cached_count=len(messages)))
@@ -8575,11 +8393,8 @@ def run_client_mail_fetch_job(job_id: str, payload: dict[str, Any], workspace_id
 def start_client_mail_fetch_job(payload: dict[str, Any], workspace_id: str = "public") -> dict[str, Any]:
     workspace = normalize_workspace_id(workspace_id)
     hydrate_login_mail_credentials(payload, workspace)
-    accounts, account_errors = transient_mail_accounts(payload)
-    temp_addresses, temp_errors = transient_temp_addresses(payload)
-    generic_accounts, generic_errors = transient_generic_accounts(payload)
-    total = len(accounts) + len(temp_addresses) + len(generic_accounts)
-    if total <= 0:
+    prepared = MAIL_FETCH_SERVICE.prepare_request(payload)
+    if prepared.total_targets <= 0:
         raise RuntimeError("当前筛选下没有可刷新邮箱")
     job_id = secrets.token_urlsafe(12)
     now = iso_now()
@@ -8589,16 +8404,17 @@ def start_client_mail_fetch_job(payload: dict[str, Any], workspace_id: str = "pu
         "workspace_id": workspace,
         "created_at": now,
         "updated_at": now,
-        "total": total,
+        "total": prepared.total_targets,
         "processed": 0,
         "current_email": "",
         "result": None,
         "error": "",
-        "warnings": account_errors + temp_errors + generic_errors,
+        "warnings": prepared.errors,
     }
     with MAIL_FETCH_JOBS_LOCK:
         MAIL_FETCH_JOBS[job_id] = job
     trim_mail_fetch_jobs()
+    payload["_prepared_mail_fetch_request"] = prepared
     thread = threading.Thread(target=run_client_mail_fetch_job, args=(job_id, payload, workspace), daemon=True)
     thread.start()
     return {"success": True, "job": mail_fetch_job_public(job)}
@@ -8740,196 +8556,23 @@ def extract_admin_jwts(payload: dict[str, Any]) -> dict[str, Any]:
 
 def sync_temp_jwts_from_worker(payload: dict[str, Any], workspace_id: str = "public") -> dict[str, Any]:
     result = extract_admin_jwts(payload)
-    base_url = normalize_temp_worker_url(coerce_text(payload.get("base_url")).rstrip("/"))
-    site_password = coerce_text(payload.get("site_password"))
-    addresses = load_workspace_temp_addresses(workspace_id)
-    imported = 0
-    updated = 0
-    for item in result.get("results", []):
-        if not isinstance(item, dict) or not item.get("ok") or not usable_secret(item.get("jwt")):
-            continue
-        email_addr = coerce_text(item.get("address") or item.get("email")).lower()
-        if "@" not in email_addr:
-            continue
-        existing = addresses.get(email_addr)
-        addresses[email_addr] = TempAddress(
-            email=email_addr,
-            jwt=coerce_text(item.get("jwt")),
-            base_url=base_url,
-            site_password=site_password,
-            label="临时邮箱",
-            created_at=existing.created_at if existing else iso_now(),
-            updated_at=iso_now(),
-        )
-        if existing:
-            updated += 1
-        else:
-            imported += 1
-    if imported or updated:
-        save_workspace_temp_addresses_state(workspace_id, addresses)
-    return {
-        **result,
-        "success": True,
-        "imported": imported,
-        "updated": updated,
-        "addresses": [addr.public() for addr in addresses.values()],
-    }
+    return MAILBOX_WORKSPACE_SERVICE.sync_temp_jwts_from_worker_result(result, payload, workspace_id)
 
 
 def import_pickup_accounts(payload: dict[str, Any], workspace_id: str = "public") -> dict[str, Any]:
-    incoming, errors = parse_account_lines(str(payload.get("text", "")))
-    accounts = load_workspace_accounts(workspace_id)
-    imported = 0
-    updated = 0
-    skipped = 0
-    replace_existing = True
-    for account in incoming:
-        key = account.email.lower()
-        existing = accounts.get(key)
-        if existing:
-            if not replace_existing:
-                skipped += 1
-                continue
-            account.created_at = existing.created_at
-            updated += 1
-        else:
-            imported += 1
-        accounts[key] = account
-    if imported or updated:
-        save_workspace_accounts_state(workspace_id, accounts)
-    return {
-        "success": True,
-        "imported": imported,
-        "updated": updated,
-        "skipped": skipped,
-        "errors": errors,
-        "accounts": [acc.public() for acc in accounts.values()],
-    }
+    return MAILBOX_WORKSPACE_SERVICE.import_pickup_accounts_for_workspace(payload, workspace_id, replace_existing=True)
 
 
 def import_temp_addresses(payload: dict[str, Any], workspace_id: str = "public") -> dict[str, Any]:
-    incoming, errors = parse_temp_address_lines(str(payload.get("text", "")))
-    addresses = load_workspace_temp_addresses(workspace_id)
-    imported = 0
-    updated = 0
-    skipped = 0
-    replace_existing = True
-    default_base_url = normalize_temp_worker_url(
-        coerce_text(payload.get("base_url") or payload.get("baseUrl") or TEMP_WORKER_URL)
-    )
-    default_site_password = coerce_text(payload.get("site_password") or payload.get("sitePassword"))
-    for address in incoming:
-        key = address.email.lower()
-        existing = addresses.get(key)
-        if existing:
-            if not replace_existing:
-                skipped += 1
-                continue
-            address.created_at = existing.created_at
-            if not usable_secret(address.jwt):
-                address.jwt = existing.jwt
-            if not address.base_url:
-                address.base_url = existing.base_url
-            if not address.site_password:
-                address.site_password = existing.site_password
-            updated += 1
-        else:
-            imported += 1
-        address.base_url = normalize_temp_worker_url(address.base_url or default_base_url)
-        address.site_password = address.site_password or default_site_password
-        address.updated_at = iso_now()
-        addresses[key] = address
-    if imported or updated:
-        save_workspace_temp_addresses_state(workspace_id, addresses)
-    return {
-        "success": True,
-        "imported": imported,
-        "updated": updated,
-        "skipped": skipped,
-        "errors": errors,
-        "addresses": [addr.public() for addr in addresses.values()],
-    }
+    return MAILBOX_WORKSPACE_SERVICE.import_temp_addresses_for_workspace(payload, workspace_id, replace_existing=True)
 
 
 def import_generic_accounts(payload: dict[str, Any], workspace_id: str = "public") -> dict[str, Any]:
-    incoming, errors = parse_generic_account_lines(str(payload.get("text", "")))
-    accounts = load_workspace_generic_accounts(workspace_id)
-    imported = 0
-    updated = 0
-    skipped = 0
-    replace_existing = True
-    for account in incoming:
-        key = account.email.lower()
-        existing = accounts.get(key)
-        if existing:
-            if not replace_existing:
-                skipped += 1
-                continue
-            account.created_at = existing.created_at
-            if not usable_secret(account.password):
-                account.password = existing.password
-            if not account.username:
-                account.username = existing.username
-            if not account.imap_host:
-                account.imap_host = existing.imap_host
-            if not account.pop3_host:
-                account.pop3_host = existing.pop3_host
-            updated += 1
-        else:
-            imported += 1
-        account.updated_at = iso_now()
-        accounts[key] = normalize_generic_account(account)
-    if imported or updated:
-        save_workspace_generic_accounts_state(workspace_id, accounts)
-    return {
-        "success": True,
-        "imported": imported,
-        "updated": updated,
-        "skipped": skipped,
-        "errors": errors,
-        "accounts": [acc.public() for acc in accounts.values()],
-    }
+    return MAILBOX_WORKSPACE_SERVICE.import_generic_accounts_for_workspace(payload, workspace_id, replace_existing=True)
 
 
 def delete_workspace_mail_credentials(payload: dict[str, Any], workspace_id: str = "public") -> dict[str, Any]:
-    emails = [
-        coerce_text(item).lower()
-        for item in payload.get("emails", [])
-        if "@" in coerce_text(item)
-    ]
-    unique = list(dict.fromkeys(emails))
-    accounts = load_workspace_accounts(workspace_id)
-    addresses = load_workspace_temp_addresses(workspace_id)
-    generic_accounts = load_workspace_generic_accounts(workspace_id)
-    deleted_microsoft = 0
-    deleted_temp = 0
-    deleted_generic = 0
-    for email_addr in unique:
-        if accounts.pop(email_addr, None) is not None:
-            deleted_microsoft += 1
-        if addresses.pop(email_addr, None) is not None:
-            deleted_temp += 1
-        if generic_accounts.pop(email_addr, None) is not None:
-            deleted_generic += 1
-    if deleted_microsoft:
-        save_workspace_accounts_state(workspace_id, accounts)
-    if deleted_temp:
-        save_workspace_temp_addresses_state(workspace_id, addresses)
-    if deleted_generic:
-        save_workspace_generic_accounts_state(workspace_id, generic_accounts)
-    return {
-        "success": True,
-        "emails": unique,
-        "deleted": {
-            "microsoft": deleted_microsoft,
-            "temp": deleted_temp,
-            "generic": deleted_generic,
-            "total": deleted_microsoft + deleted_temp + deleted_generic,
-        },
-        "accounts": [acc.public() for acc in accounts.values()],
-        "addresses": [addr.public() for addr in addresses.values()],
-        "generic_accounts": [acc.public() for acc in generic_accounts.values()],
-    }
+    return MAILBOX_WORKSPACE_SERVICE.delete_workspace_mail_credentials_for_workspace(payload, workspace_id)
 
 
 def public_pool_rows_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -9472,90 +9115,36 @@ class Handler(BaseHTTPRequestHandler):
         self.require_auth()
         if self.path == "/api/import":
             payload = self.read_json()
-            incoming, errors = parse_account_lines(str(payload.get("text", "")))
-            workspace = self.workspace_id()
-            accounts = load_workspace_accounts(workspace)
-            imported = 0
-            skipped = 0
-            updated = 0
             replace_existing = bool(payload.get("replace_existing") or payload.get("replaceExisting"))
-            for account in incoming:
-                key = account.email.lower()
-                if key in accounts:
-                    if not replace_existing:
-                        skipped += 1
-                        continue
-                    account.created_at = accounts[key].created_at
-                    updated += 1
-                else:
-                    imported += 1
-                accounts[key] = account
-            save_workspace_accounts_state(workspace, accounts)
-            self.send_json({
-                "imported": imported,
-                "skipped": skipped,
-                "updated": updated,
-                "errors": errors,
-                "accounts": [acc.public() for acc in accounts.values()],
-            })
+            self.send_json(
+                MAILBOX_WORKSPACE_SERVICE.import_pickup_accounts_for_workspace(
+                    payload,
+                    self.workspace_id(),
+                    replace_existing=replace_existing,
+                )
+            )
             return
         if self.path == "/api/temp-addresses/import":
             payload = self.read_json()
-            incoming, errors = parse_temp_address_lines(str(payload.get("text", "")))
-            workspace = self.workspace_id()
-            addresses = load_workspace_temp_addresses(workspace)
-            imported = 0
-            skipped = 0
-            updated = 0
             replace_existing = bool(payload.get("replace_existing") or payload.get("replaceExisting"))
-            for address in incoming:
-                key = address.email.lower()
-                if key in addresses:
-                    if not replace_existing:
-                        skipped += 1
-                        continue
-                    address.created_at = addresses[key].created_at
-                    updated += 1
-                else:
-                    imported += 1
-                addresses[key] = address
-            save_workspace_temp_addresses_state(workspace, addresses)
-            self.send_json({
-                "imported": imported,
-                "skipped": skipped,
-                "updated": updated,
-                "errors": errors,
-                "addresses": [addr.public() for addr in addresses.values()],
-            })
+            self.send_json(
+                MAILBOX_WORKSPACE_SERVICE.import_temp_addresses_for_workspace(
+                    payload,
+                    self.workspace_id(),
+                    replace_existing=replace_existing,
+                )
+            )
             return
         if self.path == "/api/generic-accounts/import":
             payload = self.read_json()
-            incoming, errors = parse_generic_account_lines(str(payload.get("text", "")))
-            workspace = self.workspace_id()
-            accounts = load_workspace_generic_accounts(workspace)
-            imported = 0
-            skipped = 0
-            updated = 0
             replace_existing = bool(payload.get("replace_existing") or payload.get("replaceExisting"))
-            for account in incoming:
-                key = account.email.lower()
-                if key in accounts:
-                    if not replace_existing:
-                        skipped += 1
-                        continue
-                    account.created_at = accounts[key].created_at
-                    updated += 1
-                else:
-                    imported += 1
-                accounts[key] = normalize_generic_account(account)
-            save_workspace_generic_accounts_state(workspace, accounts)
-            self.send_json({
-                "imported": imported,
-                "skipped": skipped,
-                "updated": updated,
-                "errors": errors,
-                "accounts": [acc.public() for acc in accounts.values()],
-            })
+            self.send_json(
+                MAILBOX_WORKSPACE_SERVICE.import_generic_accounts_for_workspace(
+                    payload,
+                    self.workspace_id(),
+                    replace_existing=replace_existing,
+                )
+            )
             return
         if self.path == "/api/fetch":
             payload = self.read_json()
@@ -9611,34 +9200,25 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"success": False, "error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
             return
         if self.path == "/api/delete":
-            payload = self.read_json()
-            emails = [email.lower() for email in payload.get("emails", []) if isinstance(email, str)]
-            workspace = self.workspace_id()
-            accounts = load_workspace_accounts(workspace)
-            for email_addr in emails:
-                accounts.pop(email_addr, None)
-            save_workspace_accounts_state(workspace, accounts)
-            self.send_json({"deleted": len(emails), "accounts": [acc.public() for acc in accounts.values()]})
+            result = MAILBOX_WORKSPACE_SERVICE.delete_pickup_accounts_for_workspace(
+                self.read_json(),
+                self.workspace_id(),
+            )
+            self.send_json(result)
             return
         if self.path == "/api/temp-addresses/delete":
-            payload = self.read_json()
-            emails = [email.lower() for email in payload.get("emails", []) if isinstance(email, str)]
-            workspace = self.workspace_id()
-            addresses = load_workspace_temp_addresses(workspace)
-            for email_addr in emails:
-                addresses.pop(email_addr, None)
-            save_workspace_temp_addresses_state(workspace, addresses)
-            self.send_json({"deleted": len(emails), "addresses": [addr.public() for addr in addresses.values()]})
+            result = MAILBOX_WORKSPACE_SERVICE.delete_temp_addresses_for_workspace(
+                self.read_json(),
+                self.workspace_id(),
+            )
+            self.send_json(result)
             return
         if self.path == "/api/generic-accounts/delete":
-            payload = self.read_json()
-            emails = [email.lower() for email in payload.get("emails", []) if isinstance(email, str)]
-            workspace = self.workspace_id()
-            accounts = load_workspace_generic_accounts(workspace)
-            for email_addr in emails:
-                accounts.pop(email_addr, None)
-            save_workspace_generic_accounts_state(workspace, accounts)
-            self.send_json({"deleted": len(emails), "accounts": [acc.public() for acc in accounts.values()]})
+            result = MAILBOX_WORKSPACE_SERVICE.delete_generic_accounts_for_workspace(
+                self.read_json(),
+                self.workspace_id(),
+            )
+            self.send_json(result)
             return
         if self.path == "/api/messages/search":
             payload = self.read_json()
