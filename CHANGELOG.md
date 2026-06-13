@@ -1,5 +1,11 @@
 # 更新记录
 
+## 1.0.5
+
+- 继续拆分 `server.py`，把 CPA 仓管和凭证刷新相关的客户端 HTTP 路由独立到新的 `cpa_http_handlers.py`，包括登录状态查询、生命周期刷新、401 扫描/修复、auth 替换、手动填码、任务终止和已停用 OAuth 路径提示。
+- `Handler` 里的 CPA/刷新路由分支改为调用独立 handler 模块，`server.py` 继续收缩成入口层，后面再拆 `http_handlers` 其他部分时能沿着同样的模式继续推进。
+- 新增 `tests/test_cpa_http_handlers.py`，覆盖 CPA 登录状态、生命周期刷新、登录启动参数补丁、登录异常分类和已停用 OAuth 接口，保证路由抽离后返回结构保持稳定。
+
 ## 1.0.4
 
 - 继续拆分 `server.py`，把凭证生命周期刷新逻辑独立到新的 `refresh_lifecycle_service.py`：统一接管 RT / session_token / access_token 三条刷新与探测路径，减少 `server.py` 和 `cpa_client.py` 之间的隐式耦合。

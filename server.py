@@ -86,6 +86,7 @@ from dashboard_stats import (
     dashboard_message_recipient as build_dashboard_message_recipient,
     dashboard_stats_response as build_dashboard_stats_response,
 )
+from cpa_http_handlers import CpaHttpHandlers
 from cpa_client import CpaClient
 from refresh_lifecycle_service import RefreshLifecycleService
 from message_query_service import MessageQueryService
@@ -5365,6 +5366,7 @@ def cpa_direct_oauth_callback(payload: dict[str, Any]) -> dict[str, Any]:
 
 CPA_CLIENT: CpaClient | None = None
 REFRESH_LIFECYCLE_SERVICE: RefreshLifecycleService | None = None
+CPA_HTTP_HANDLERS: CpaHttpHandlers | None = None
 
 
 def refresh_lifecycle_service() -> RefreshLifecycleService:
@@ -5382,6 +5384,31 @@ def refresh_lifecycle_service() -> RefreshLifecycleService:
         )
         REFRESH_LIFECYCLE_SERVICE = service
     return service
+
+
+def cpa_http_handlers() -> CpaHttpHandlers:
+    global CPA_HTTP_HANDLERS
+    handlers = CPA_HTTP_HANDLERS
+    if handlers is None:
+        handlers = CpaHttpHandlers(
+            get_cpa_login_job=get_cpa_login_job,
+            get_local_oauth_flow=get_local_oauth_flow,
+            scan_cpa_401=scan_cpa_401,
+            repair_cpa_401=repair_cpa_401,
+            delete_cpa_items=delete_cpa_items,
+            replace_cpa_auth_file=replace_cpa_auth_file,
+            refresh_lifecycle=refresh_lifecycle,
+            refresh_cpa_lifecycle=refresh_cpa_lifecycle,
+            set_login_manual_email_code=set_login_manual_email_code,
+            set_login_manual_phone_code=set_login_manual_phone_code,
+            cancel_login_job=cancel_login_job,
+            start_cpa_login_job=start_cpa_login_job,
+            classify_login_exception=classify_login_exception,
+            cpa_direct_oauth_start=cpa_direct_oauth_start,
+            cpa_direct_oauth_callback=cpa_direct_oauth_callback,
+        )
+        CPA_HTTP_HANDLERS = handlers
+    return handlers
 
 
 def cpa_client() -> CpaClient:
@@ -7874,19 +7901,7 @@ class Handler(BaseHTTPRequestHandler):
             self.serve_static_file(STATIC_DIR / "warehouse.html")
             return
         parsed_client = parsed_request
-        if parsed_client.path == "/client-api/cpa/login-status":
-            try:
-                params = urllib.parse.parse_qs(parsed_client.query)
-                self.send_json(get_cpa_login_job(params.get("job_id", [""])[0], self.workspace_id()))
-            except Exception as exc:
-                self.send_json({"success": False, "error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if parsed_client.path == "/client-api/cpa/local-oauth-status":
-            try:
-                params = urllib.parse.parse_qs(parsed_client.query)
-                self.send_json(get_local_oauth_flow(params.get("state", [""])[0]))
-            except Exception as exc:
-                self.send_json({"success": False, "error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
+        if cpa_http_handlers().handle_client_get(self, parsed_client):
             return
         if parsed_client.path == "/client-api/fetch-status":
             try:
@@ -8032,41 +8047,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_json({"success": False, "error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
             return
-        if self.path == "/client-api/cpa/scan-401":
-            try:
-                self.send_json(scan_cpa_401(self.read_json()))
-            except Exception as exc:
-                self.send_json({"success": False, "error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if self.path == "/client-api/cpa/repair-401":
-            try:
-                self.send_json(repair_cpa_401(self.read_json()))
-            except Exception as exc:
-                self.send_json({"success": False, "error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if self.path in {"/client-api/cpa/delete", "/client-api/cpa/delete-selected"}:
-            try:
-                self.send_json(delete_cpa_items(self.read_json()))
-            except Exception as exc:
-                self.send_json({"success": False, "error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if self.path == "/client-api/cpa/replace-auth":
-            try:
-                self.send_json(replace_cpa_auth_file(self.read_json()))
-            except Exception as exc:
-                self.send_json({"success": False, "error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if self.path == "/client-api/accounts/lifecycle-refresh":
-            try:
-                self.send_json(refresh_lifecycle(self.read_json()))
-            except Exception as exc:
-                self.send_json({"success": False, "error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if self.path == "/client-api/cpa/lifecycle-refresh":
-            try:
-                self.send_json(refresh_cpa_lifecycle(self.read_json()))
-            except Exception as exc:
-                self.send_json({"success": False, "error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
+        if cpa_http_handlers().handle_client_post(self):
             return
         if self.path == "/client-api/proxy/check":
             try:
@@ -8139,76 +8120,6 @@ class Handler(BaseHTTPRequestHandler):
                     "error": str(exc)[:500],
                     "error_code": "phone_code_fetch_failed",
                 }, status=HTTPStatus.BAD_REQUEST)
-            return
-        if self.path == "/client-api/cpa/login-manual-code":
-            try:
-                self.send_json(set_login_manual_email_code(self.read_json(), self.workspace_id()))
-            except Exception as exc:
-                self.send_json({
-                    "success": False,
-                    "error": str(exc)[:500],
-                    "error_code": "manual_email_code_failed",
-                }, status=HTTPStatus.BAD_REQUEST)
-            return
-        if self.path == "/client-api/cpa/login-manual-phone-code":
-            try:
-                self.send_json(set_login_manual_phone_code(self.read_json(), self.workspace_id()))
-            except Exception as exc:
-                self.send_json({
-                    "success": False,
-                    "error": str(exc)[:500],
-                    "error_code": "manual_phone_code_failed",
-                }, status=HTTPStatus.BAD_REQUEST)
-            return
-        if self.path == "/client-api/cpa/login-cancel":
-            try:
-                self.send_json(cancel_login_job(self.read_json(), self.workspace_id()))
-            except Exception as exc:
-                self.send_json({
-                    "success": False,
-                    "error": str(exc)[:500],
-                    "error_code": "login_cancel_failed",
-                }, status=HTTPStatus.BAD_REQUEST)
-            return
-        if self.path == "/client-api/cpa/login-start":
-            try:
-                payload = self.read_json()
-                if payload.get("use_stored_mail_credentials") or payload.get("useStoredMailCredentials"):
-                    payload["_allow_stored_mail_credentials"] = True
-                self.send_json(start_cpa_login_job(payload, self.workspace_id()))
-            except Exception as exc:
-                details = classify_login_exception(exc)
-                self.send_json({
-                    "success": False,
-                    "error": details.get("message", str(exc))[:500],
-                    "error_code": details.get("code", "login_failed"),
-                    "error_hint": details.get("hint", ""),
-                    "retryable": details.get("retryable", True),
-                }, status=HTTPStatus.BAD_REQUEST)
-            return
-        if self.path == "/client-api/cpa/direct-oauth-start":
-            try:
-                self.send_json(cpa_direct_oauth_start(self.read_json()))
-            except Exception as exc:
-                self.send_json({"success": False, "error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if self.path == "/client-api/cpa/direct-oauth-callback":
-            try:
-                self.send_json(cpa_direct_oauth_callback(self.read_json()))
-            except Exception as exc:
-                self.send_json({"success": False, "error": str(exc)[:500]}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if self.path == "/client-api/cpa/companion-wait-code":
-            self.send_json({"success": False, "error": "Companion 扩展路径已停用；凭证刷新只走 CPA OAuth 协议登录。"}, status=HTTPStatus.GONE)
-            return
-        if self.path == "/client-api/cpa/manual-oauth-start":
-            self.send_json({"success": False, "error": "手动 OAuth 路径已停用；凭证刷新只走 CPA OAuth 协议登录。"}, status=HTTPStatus.GONE)
-            return
-        if self.path == "/client-api/cpa/manual-oauth-complete":
-            self.send_json({"success": False, "error": "手动 OAuth 路径已停用；凭证刷新只走 CPA OAuth 协议登录。"}, status=HTTPStatus.GONE)
-            return
-        if self.path == "/client-api/cpa/local-oauth-start":
-            self.send_json({"success": False, "error": "本机浏览器 OAuth 路径已停用；凭证刷新只走 CPA OAuth 协议登录。"}, status=HTTPStatus.GONE)
             return
         if self.path.startswith("/admin-api/"):
             try:
