@@ -1,5 +1,13 @@
 # 更新记录
 
+## 1.1.0
+
+- 并行完成三条核心基础设施升级：A1 仪表盘/活动统计 SQLite 查询层、A2 登录任务状态 SQLite 持久化、A3 邮件缓存 SQLite 化，项目从“JSON 为主、SQLite 试探接入”推进到“活动与邮件缓存已有稳定 SQLite 主路径”。
+- `dashboard_stats.py` 新增面向活动路径的 SQLite 优先统计入口，`refresh_results / login_history` 支持可复用的 SQLite 查询接口，同时保留旧 JSON 兼容兜底和自动回填。
+- 新增 `storage/login_job_store.py`，把登录任务关键状态、日志、手动邮箱码/手机码、终止状态和重启恢复写入 SQLite；服务重启后会恢复队列/历史视图，未完成任务统一标记为 `login_interrupted`，避免前端无限轮询假运行状态。
+- 新增 `storage/message_sqlite_store.py`，邮件缓存现在支持 SQLite sidecar，服务端读取邮件缓存优先走 SQLite；如果只有旧 `messages.json`，首次读取会自动回填到 SQLite，同时继续兼容现有前端接口和 `public` 工作区 root/workspace 双路径缓存。
+- 补齐 `tests/test_dashboard_stats.py`、`tests/test_login_job_store.py`、`tests/test_login_job_persistence.py`、`tests/test_message_store.py` 等回归覆盖，当前这一轮合并后的总测试结果为 `89 passed`。
+
 ## 1.0.8
 
 - 活动数据读取正式切到 SQLite 优先：`refresh_results` 和 `login_history` 现在会先读 `.sqlite3` sidecar，没有 sidecar 时再回退到原有 JSON 快照。
