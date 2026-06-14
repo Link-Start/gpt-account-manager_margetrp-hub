@@ -295,6 +295,33 @@ class WorkspaceViewsIntegrationTests(unittest.TestCase):
         self.assertEqual({row["account"] for row in root_messages}, expected_accounts)
         self.assertEqual({row["account"] for row in workspace_messages}, expected_accounts)
 
+    def test_public_workspace_load_messages_backfills_sqlite_sidecars(self) -> None:
+        root_message = {
+            "source": "microsoft",
+            "account": "root@example.com",
+            "folder": "inbox",
+            "mid": "root-1",
+            "subject": "root code 123456",
+            "received_at": "2026-06-08T00:00:00+00:00",
+        }
+        workspace_message = {
+            "source": "temp",
+            "account": "temp@example.com",
+            "folder": "inbox",
+            "mid": "temp-1",
+            "subject": "temp promo",
+            "received_at": "2026-06-08T01:00:00+00:00",
+        }
+        self.write_json(s.MESSAGES_FILE, {"messages": [root_message]})
+        public_dir = self.public_workspace_dir()
+        self.write_json(public_dir / "messages.json", {"messages": [workspace_message]})
+
+        messages = s.load_workspace_messages("public")
+
+        self.assertEqual({row["account"] for row in messages}, {"root@example.com", "temp@example.com"})
+        self.assertTrue(s.MESSAGES_FILE.with_suffix(".sqlite3").exists())
+        self.assertTrue((public_dir / "messages.sqlite3").exists())
+
     def test_public_workspace_append_refresh_result_syncs_root_and_workspace_files(self) -> None:
         public_dir = self.public_workspace_dir()
         self.write_json(s.REFRESH_RESULTS_FILE, {"results": [{"email": "root@example.com", "job_id": "job-root"}]})

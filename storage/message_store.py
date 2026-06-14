@@ -5,6 +5,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from storage.message_sqlite_store import (
+    load_messages as sqlite_load_messages,
+    save_messages_snapshot as sqlite_save_messages_snapshot,
+)
+
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -28,6 +33,14 @@ def load_messages(
     normalize_mail_type: Callable[[Any, str], str],
     mail_type_labels: dict[str, str],
 ) -> list[dict[str, Any]]:
+    sqlite_rows = sqlite_load_messages(path)
+    if sqlite_rows:
+        return _normalize_rows(
+            sqlite_rows,
+            coerce_text=coerce_text,
+            normalize_mail_type=normalize_mail_type,
+            mail_type_labels=mail_type_labels,
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         return []
@@ -38,19 +51,14 @@ def load_messages(
     rows = raw.get("messages", []) if isinstance(raw, dict) else raw
     if not isinstance(rows, list):
         return []
-    cleaned: list[dict[str, Any]] = []
-    for item in rows:
-        if not isinstance(item, dict):
-            continue
-        message = dict(item)
-        message_text = " ".join(
-            coerce_text(message.get(key))
-            for key in ["sender", "subject", "preview", "body", "html_body", "mail_type_label"]
-        )
-        normalized_type = normalize_mail_type(message.get("mail_type"), message_text)
-        message["mail_type"] = normalized_type
-        message["mail_type_label"] = mail_type_labels.get(normalized_type, "other")
-        cleaned.append(message)
+    cleaned = _normalize_rows(
+        rows,
+        coerce_text=coerce_text,
+        normalize_mail_type=normalize_mail_type,
+        mail_type_labels=mail_type_labels,
+    )
+    if cleaned:
+        sqlite_save_messages_snapshot(path, cleaned, dedupe_key=message_key)
     return cleaned
 
 
@@ -76,6 +84,7 @@ def save_messages(
         except OSError:
             pass
         raise
+    sqlite_save_messages_snapshot(path, trimmed, dedupe_key=message_key)
 
 
 def upsert_messages(
@@ -103,3 +112,26 @@ def upsert_messages(
         message.setdefault("cached_at", now)
         cache[message_key(message)] = message
     save_messages(list(cache.values()), path, sort_key=sort_key)
+
+
+def _normalize_rows(
+    rows: list[Any],
+    *,
+    coerce_text: Callable[[Any], str],
+    normalize_mail_type: Callable[[Any, str], str],
+    mail_type_labels: dict[str, str],
+) -> list[dict[str, Any]]:
+    cleaned: list[dict[str, Any]] = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        message = dict(item)
+        message_text = " ".join(
+            coerce_text(message.get(key))
+            for key in ["sender", "subject", "preview", "body", "html_body", "mail_type_label"]
+        )
+        normalized_type = normalize_mail_type(message.get("mail_type"), message_text)
+        message["mail_type"] = normalized_type
+        message["mail_type_label"] = mail_type_labels.get(normalized_type, "other")
+        cleaned.append(message)
+    return cleaned
