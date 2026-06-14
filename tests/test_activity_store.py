@@ -36,6 +36,20 @@ class ActivityStoreTests(unittest.TestCase):
         self.assertTrue(db_path.exists())
         self.assertEqual(self.fetch_count(db_path, "refresh_results"), 2)
 
+    def test_load_refresh_results_backfills_sqlite_from_json(self):
+        json_path = self.root / "refresh_results.json"
+        json_path.write_text(
+            '{"updated_at":"2026-06-14T10:00:00+00:00","results":[{"email":"legacy@example.com","job_id":"job-legacy"}]}',
+            encoding="utf-8",
+        )
+
+        rows = activity_store.load_refresh_results(json_path)
+
+        db_path = sqlite_path_for_json(json_path)
+        self.assertEqual(rows[0]["email"], "legacy@example.com")
+        self.assertTrue(db_path.exists())
+        self.assertEqual(self.fetch_count(db_path, "refresh_results"), 1)
+
     def test_append_refresh_result_updates_json_and_sqlite(self):
         json_path = self.root / "refresh_results.json"
 
@@ -72,6 +86,20 @@ class ActivityStoreTests(unittest.TestCase):
         db_path = sqlite_path_for_json(json_path)
         self.assertTrue(db_path.exists())
         self.assertEqual(self.fetch_count(db_path, "login_history"), 2)
+
+    def test_load_login_history_backfills_sqlite_from_json(self):
+        json_path = self.root / "login_history.json"
+        json_path.write_text(
+            '{"updated_at":"2026-06-14T10:00:00+00:00","history":[{"job_id":"job-legacy","status":"success"}]}',
+            encoding="utf-8",
+        )
+
+        rows = activity_store.load_login_history(json_path)
+
+        db_path = sqlite_path_for_json(json_path)
+        self.assertEqual(rows[0]["job_id"], "job-legacy")
+        self.assertTrue(db_path.exists())
+        self.assertEqual(self.fetch_count(db_path, "login_history"), 1)
 
     def test_append_login_history_updates_json_and_sqlite(self):
         json_path = self.root / "login_history.json"

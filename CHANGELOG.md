@@ -1,5 +1,11 @@
 # 更新记录
 
+## 1.0.8
+
+- 活动数据读取正式切到 SQLite 优先：`refresh_results` 和 `login_history` 现在会先读 `.sqlite3` sidecar，没有 sidecar 时再回退到原有 JSON 快照。
+- 旧 JSON 活动数据第一次被读取时会自动回填到 SQLite sidecar，不需要额外的手工迁移步骤；这样现有部署升级后，活动数据会自然完成“边读边迁”。
+- 扩展 `tests/test_activity_store.py`，补齐旧 JSON 回填 SQLite 的覆盖，确保这次不是只做双写，而是真正把活动读取主路径切到了更稳的持久化层。
+
 ## 1.0.7
 
 - 开始把活动数据从纯 JSON 向更稳的持久化层推进：新增 `storage/activity_sqlite_store.py`，为刷新结果和登录历史生成 SQLite sidecar。

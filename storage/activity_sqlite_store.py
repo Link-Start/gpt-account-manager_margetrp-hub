@@ -199,3 +199,59 @@ def append_login_history_entry(path: Path, row: dict[str, Any], *, limit: int) -
             conn.commit()
         finally:
             conn.close()
+
+
+def load_refresh_results(path: Path) -> list[dict[str, Any]]:
+    db_path = sqlite_path_for_json(path)
+    if not db_path.exists():
+        return []
+    with _DB_LOCK:
+        conn = _connect(db_path)
+        try:
+            _ensure_schema(conn)
+            rows = conn.execute(
+                """
+                SELECT payload_json
+                FROM refresh_results
+                ORDER BY refreshed_at DESC, rowid DESC
+                """
+            ).fetchall()
+            result: list[dict[str, Any]] = []
+            for row in rows:
+                try:
+                    payload = json.loads(str(row["payload_json"] or ""))
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict):
+                    result.append(payload)
+            return result
+        finally:
+            conn.close()
+
+
+def load_login_history(path: Path) -> list[dict[str, Any]]:
+    db_path = sqlite_path_for_json(path)
+    if not db_path.exists():
+        return []
+    with _DB_LOCK:
+        conn = _connect(db_path)
+        try:
+            _ensure_schema(conn)
+            rows = conn.execute(
+                """
+                SELECT payload_json
+                FROM login_history
+                ORDER BY finished_at DESC, started_at DESC, rowid DESC
+                """
+            ).fetchall()
+            result: list[dict[str, Any]] = []
+            for row in rows:
+                try:
+                    payload = json.loads(str(row["payload_json"] or ""))
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict):
+                    result.append(payload)
+            return result
+        finally:
+            conn.close()

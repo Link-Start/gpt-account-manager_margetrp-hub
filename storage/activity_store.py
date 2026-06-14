@@ -8,6 +8,8 @@ from typing import Any
 from storage.activity_sqlite_store import (
     append_login_history_entry as sqlite_append_login_history_entry,
     append_refresh_result_entry as sqlite_append_refresh_result_entry,
+    load_login_history as sqlite_load_login_history,
+    load_refresh_results as sqlite_load_refresh_results,
     save_login_history_snapshot as sqlite_save_login_history_snapshot,
     save_refresh_results_snapshot as sqlite_save_refresh_results_snapshot,
 )
@@ -48,7 +50,13 @@ def _save_rows(path: Path, list_key: str, rows: list[dict[str, Any]], *, limit: 
 
 
 def load_refresh_results(path: Path) -> list[dict[str, Any]]:
-    return _load_rows(path, "results")
+    rows = sqlite_load_refresh_results(path)
+    if rows:
+        return rows
+    rows = _load_rows(path, "results")
+    if rows:
+        sqlite_save_refresh_results_snapshot(path, rows, limit=max(len(rows), 1))
+    return rows
 
 
 def save_refresh_results(path: Path, results: list[dict[str, Any]], *, limit: int) -> None:
@@ -81,7 +89,13 @@ def append_refresh_result(
 
 
 def load_login_history(path: Path) -> list[dict[str, Any]]:
-    return _load_rows(path, "history")
+    rows = sqlite_load_login_history(path)
+    if rows:
+        return rows
+    rows = _load_rows(path, "history")
+    if rows:
+        sqlite_save_login_history_snapshot(path, rows, limit=max(len(rows), 1))
+    return rows
 
 
 def save_login_history(path: Path, history: list[dict[str, Any]], *, limit: int) -> None:
