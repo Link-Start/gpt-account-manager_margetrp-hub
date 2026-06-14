@@ -72,6 +72,10 @@ from storage.message_store import (
     save_messages as storage_save_messages_rows,
     upsert_messages as storage_upsert_messages_rows,
 )
+from storage.login_job_store import (
+    load_login_jobs as storage_load_login_jobs,
+    upsert_login_job as storage_upsert_login_job,
+)
 from storage.workspace import (
     file_item_count as storage_file_item_count,
     load_json_file as storage_load_json_file,
@@ -262,6 +266,7 @@ CPA_PROBE_USER_AGENT = "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTermi
 LOGIN_JOBS: dict[str, dict[str, Any]] = {}
 LOGIN_JOBS_LOCK = threading.Lock()
 LOGIN_LOG_LIMIT = 400
+LOGIN_JOB_LIMIT = 400
 MAIL_FETCH_JOBS: dict[str, dict[str, Any]] = {}
 MAIL_FETCH_JOBS_LOCK = threading.Lock()
 MAIL_FETCH_JOB_LIMIT = 120
@@ -826,6 +831,7 @@ def dashboard_stats_response(
 
 REFRESH_RESULTS_LIMIT = 500
 LOGIN_HISTORY_LIMIT = 300
+LOGIN_JOBS_FILE = DATA_DIR / "login_jobs.sqlite3"
 
 
 def load_refresh_results(path: Path = REFRESH_RESULTS_FILE) -> list[dict[str, Any]]:
@@ -841,6 +847,14 @@ def load_login_history(path: Path = LOGIN_HISTORY_FILE) -> list[dict[str, Any]]:
 
 def save_login_history(history: list[dict[str, Any]], path: Path = LOGIN_HISTORY_FILE) -> None:
     storage_save_login_history_rows(path, history, limit=LOGIN_HISTORY_LIMIT)
+
+
+def persist_login_job(job: dict[str, Any]) -> None:
+    storage_upsert_login_job(LOGIN_JOBS_FILE, job, limit=LOGIN_JOB_LIMIT)
+
+
+def load_persisted_login_jobs() -> list[dict[str, Any]]:
+    return storage_load_login_jobs(LOGIN_JOBS_FILE)
 
 
 WORKSPACE_VIEWS = WorkspaceViews(
@@ -1363,6 +1377,11 @@ def set_login_manual_phone_code(payload: dict[str, Any], workspace_id: str = "pu
             raise RuntimeError("登录任务不属于当前工作区")
         job["manual_phone_code"] = code
         job["updated_at"] = iso_now()
+        job_snapshot = dict(job)
+    try:
+        persist_login_job(job_snapshot)
+    except Exception:
+        pass
     append_login_log(job_id, "已收到手动手机验证码", "info", "manual_phone_code")
     return {"success": True, "job_id": job_id}
 
@@ -5967,6 +5986,35 @@ def login_job_public(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def restore_login_job(job: dict[str, Any]) -> dict[str, Any]:
+    restored = dict(job or {})
+    logs = restored.get("logs")
+    restored["logs"] = [entry for entry in logs if isinstance(entry, dict)] if isinstance(logs, list) else []
+    state = normalize_refresh_state(restored.get("state") or restored.get("status") or "queued")
+    if restored.get("status") in {"queued", "running"} or not is_terminal_refresh_state(state):
+        restored["status"] = "failed"
+        restored["state"] = "failed"
+        restored["error_code"] = coerce_text(restored.get("error_code")) or "login_interrupted"
+        restored["error_hint"] = coerce_text(restored.get("error_hint")) or "服务重启后任务已中断，请重新生成。"
+        restored["error"] = coerce_text(restored.get("error")) or "任务因服务重启中断"
+        restored["retryable"] = True
+        restored["finished_at"] = coerce_text(restored.get("finished_at")) or iso_now()
+        restored["updated_at"] = restored["finished_at"]
+        restored["cancel_requested"] = False
+        restored["manual_email_code"] = coerce_text(restored.get("manual_email_code"))
+        restored["manual_phone_code"] = coerce_text(restored.get("manual_phone_code"))
+        restored["logs"].append({
+            "time": restored["finished_at"],
+            "level": "warning",
+            "step": "restart",
+            "message": "服务重启后任务已中断，请重新生成。",
+        })
+    else:
+        restored["status"] = refresh_status_for_state(state)
+        restored["state"] = state
+    return restored
+
+
 def append_login_log(job_id: str, message: str, level: str = "info", step: str = "") -> None:
     entry = {
         "time": iso_now(),
@@ -5986,6 +6034,11 @@ def append_login_log(job_id: str, message: str, level: str = "info", step: str =
         if derived_state and not is_terminal_refresh_state(derived_state):
             job["state"] = derived_state
         job["updated_at"] = entry["time"]
+        job_snapshot = dict(job)
+    try:
+        persist_login_job(job_snapshot)
+    except Exception:
+        pass
 
 
 def set_login_job_status(job_id: str, status: str, **updates: Any) -> None:
@@ -6010,6 +6063,11 @@ def set_login_job_status(job_id: str, status: str, **updates: Any) -> None:
                 )
             except Exception:
                 pass
+        job_snapshot = dict(job)
+    try:
+        persist_login_job(job_snapshot)
+    except Exception:
+        pass
 
 
 def login_job_cancel_requested(job_id: str) -> bool:
@@ -6052,6 +6110,11 @@ def cancel_login_job(payload: dict[str, Any], workspace_id: str = "public") -> d
             job["error_hint"] = "用户已手动终止这个刷新任务。"
             job["retryable"] = False
             job["finished_at"] = job["updated_at"]
+        job_snapshot = dict(job)
+    try:
+        persist_login_job(job_snapshot)
+    except Exception:
+        pass
     append_login_log(job_id, "任务已终止", "warning", "cancel")
     return {"success": True, "job": login_job_public(LOGIN_JOBS.get(job_id, {}))}
 
@@ -6100,6 +6163,11 @@ def set_login_manual_email_code(payload: dict[str, Any], workspace_id: str = "pu
             raise RuntimeError("登录任务不属于当前工作区")
         job["manual_email_code"] = code
         job["updated_at"] = iso_now()
+        job_snapshot = dict(job)
+    try:
+        persist_login_job(job_snapshot)
+    except Exception:
+        pass
     append_login_log(job_id, "已收到手动邮箱验证码", "info", "manual_email_code")
     return {"success": True, "job_id": job_id}
 
@@ -7501,6 +7569,10 @@ def start_cpa_login_job(payload: dict[str, Any], workspace_id: str = "public") -
     }
     with LOGIN_JOBS_LOCK:
         LOGIN_JOBS[job_id] = job
+    try:
+        persist_login_job(job)
+    except Exception:
+        pass
     if payload.pop("_allow_stored_mail_credentials", False):
         summary = hydrate_login_mail_credentials(payload, payload["_workspace_id"])
         if summary.get("added") or summary.get("updated"):
@@ -8043,11 +8115,14 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     try:
+        restored_jobs = {coerce_text(entry.get("job_id")): restore_login_job(entry) for entry in load_persisted_login_jobs() if coerce_text(entry.get("job_id"))}
         history = startup_login_history_entries()
         with LOGIN_JOBS_LOCK:
+            for job_id, entry in restored_jobs.items():
+                LOGIN_JOBS[job_id] = entry
             for entry in history:
                 job_id = entry.get("job_id")
-                if job_id:
+                if job_id and job_id not in LOGIN_JOBS:
                     state = normalize_refresh_state(entry.get("state") or entry.get("status") or "success")
                     LOGIN_JOBS[job_id] = {
                         "job_id": job_id,
