@@ -166,6 +166,7 @@ const els = {
   mailboxControlsBody: document.querySelector("#mailboxControlsBody"),
   addCategoryBtn: document.querySelector("#addCategoryBtn"),
   groupByImportDateBtn: document.querySelector("#groupByImportDateBtn"),
+  enqueueSelectedRefreshBtn: document.querySelector("#enqueueSelectedRefreshBtn"),
   deleteCategoryBtn: document.querySelector("#deleteCategoryBtn"),
   clearLocalBtn: document.querySelector("#clearLocalBtn"),
   backupLocalBtn: document.querySelector("#backupLocalBtn"),
@@ -220,7 +221,6 @@ const els = {
   mailWorkspace: document.querySelector("#mailWorkspace"),
   mailDetail: document.querySelector("#mailDetail"),
   copyCodeBtn: document.querySelector("#copyCodeBtn"),
-  pushRefreshBtn: document.querySelector("#pushRefreshBtn"),
   deleteMessageBtn: document.querySelector("#deleteMessageBtn"),
   groupModal: document.querySelector("#groupModal"),
   groupModalInput: document.querySelector("#groupModalInput"),
@@ -232,12 +232,16 @@ const els = {
 
 const base = window.GAM?.base;
 const scheduler = window.GAM?.scheduler;
+const refreshQueueModel = window.GAM?.refreshQueueModel;
 const authQueryToken = base?.persistAdminTokenFromQuery?.() || new URLSearchParams(window.location.search).get("token") || "";
 if (!base && authQueryToken) {
   localStorage.setItem("ctgptm.admin.toolToken", authQueryToken);
 }
 
 function migrateLegacyStorageKeys(names) {
+  if (base?.migrateLegacyStorageKeys) {
+    return base.migrateLegacyStorageKeys(LEGACY_STORAGE_KEYS, STORAGE_KEYS, names);
+  }
   names.forEach((name) => {
     const legacyKey = LEGACY_STORAGE_KEYS[name];
     const scopedKey = STORAGE_KEYS[name];
@@ -289,6 +293,13 @@ const state = {
   filteredAccountsCacheRows: [],
 };
 const pendingSaveTimers = new Map();
+const saveScheduler = base?.createPendingSaveScheduler?.((key, value) => saveJson(key, value)) || null;
+let mailboxWorkspace = null;
+let mailboxAccountModel = null;
+let mailboxImportHelper = null;
+let mailboxImportUiHelper = null;
+let mailboxMessageView = null;
+let refreshQueueHelper = null;
 
 const cpaSettings = loadJson(STORAGE_KEYS.cpaSettings, {});
 const tempSettings = loadJson(STORAGE_KEYS.tempSettings, {});
@@ -303,6 +314,63 @@ if (tempSettings.base_url && tempSettings.base_url !== els.importTempApi.value) 
     base_url: els.importTempApi.value,
   });
 }
+
+mailboxAccountModel = window.GAM?.mailboxAccountModel?.createMailboxAccountModel?.({
+  defaultTempWorkerUrl: DEFAULT_TEMP_WORKER_URL,
+  legacyTempWorkerUrls: [...LEGACY_TEMP_WORKER_URLS],
+  importDateCategoryPattern: IMPORT_DATE_CATEGORY_PATTERN,
+  reservedCategoryNames: [...RESERVED_CATEGORY_NAMES],
+  legacyCategoryNames: [...LEGACY_CATEGORY_NAMES],
+  legacySeededCategories: [...LEGACY_SEEDED_CATEGORIES],
+  serviceLabels: {
+    microsoft: "Outlook",
+    temp: "临时邮箱",
+    generic: "其他邮箱",
+  },
+  treatDefaultCategoryAsEmpty: true,
+  onEnsureCategory: (category) => ensureCategory(category),
+});
+
+mailboxImportHelper = window.GAM?.mailboxImport?.createMailboxImportHelper?.({
+  serviceMap: MAIL_SERVICES,
+  normalizeStoredAccount: (account) => normalizeStoredAccount(account),
+  normalizeTempWorkerUrl: (value) => normalizeTempWorkerUrl(value),
+  normalizeGenericMode: (value) => normalizeGenericMode(value),
+  isGenericApiMode: (value) => isGenericApiMode(value),
+  looksLikeJwt: (value) => looksLikeJwt(value),
+  looksLikeMicrosoftClientId: (value) => looksLikeMicrosoftClientId(value),
+  looksLikeMicrosoftRefreshToken: (value) => looksLikeMicrosoftRefreshToken(value),
+  serviceForParsedParts: (parts, source) => serviceForParsedParts(parts, source),
+  allowSingleStructuredObject: true,
+  allowJsonLines: true,
+  flexibleTempFields: true,
+});
+
+mailboxImportUiHelper = window.GAM?.mailboxImportUi?.createMailboxImportUiHelper?.({
+  parseLines: (text, source) => parseLines(text, source),
+  sourceMeta: Object.fromEntries(Object.entries(MAIL_SERVICES).map(([key, service]) => [key, {
+    placeholder: service.placeholder || "",
+    tempMode: service.source === "temp",
+  }])),
+});
+
+mailboxMessageView = window.GAM?.mailboxMessageView?.createMailboxMessageView?.({
+  typeLabels: TYPE_LABELS,
+  emptyCategoryLabel: EMPTY_CATEGORY_LABEL,
+  escapeHtml,
+});
+
+refreshQueueHelper = refreshQueueModel?.createRefreshQueueModel?.({
+  serviceLabels: {
+    microsoft: "Outlook",
+    generic: "其他邮箱",
+    temp: "临时邮箱",
+    local: "本地邮箱",
+  },
+  resolveAccount: (row) => accountForRow(row),
+  cpaBaseUrl: () => els.cpaBaseUrl?.value.trim() || "",
+  cpaManagementKey: () => els.cpaKey?.value || "",
+});
 
 localStorage.removeItem("ctgptm.mail.tempWorkerUrl");
 
@@ -343,6 +411,10 @@ function saveJson(key, value) {
 }
 
 function scheduleSaveJson(key, value, delay = 180) {
+  if (saveScheduler?.schedule) {
+    saveScheduler.schedule(key, value, delay);
+    return;
+  }
   const existing = pendingSaveTimers.get(key);
   if (existing) clearTimeout(existing);
   const timer = setTimeout(() => {
@@ -358,6 +430,9 @@ function applyMailboxControlsState() {
   if (els.mailboxControlsBody) els.mailboxControlsBody.hidden = collapsed;
   if (els.mailboxControlsToggle) els.mailboxControlsToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
   if (els.mailboxControlsToggleText) els.mailboxControlsToggleText.textContent = collapsed ? "展开" : "收起";
+  if (els.enqueueSelectedRefreshBtn) {
+    els.enqueueSelectedRefreshBtn.disabled = !selectedVisibleMailboxAccounts().length;
+  }
 }
 
 function toggleMailboxControls(forceCollapsed) {
@@ -693,44 +768,27 @@ function normalizeUrl(value) {
 }
 
 function normalizeTempWorkerUrl(value) {
-  let clean = normalizeUrl(value);
-  if (clean && !/^https?:\/\//i.test(clean)) clean = `https://${clean}`;
-  return LEGACY_TEMP_WORKER_URLS.has(clean) ? DEFAULT_TEMP_WORKER_URL : (clean || DEFAULT_TEMP_WORKER_URL);
+  return mailboxAccountModel.normalizeTempWorkerUrl(value);
 }
 
 function isMaskedSecret(value) {
-  const text = String(value || "").trim();
-  if (!text) return false;
-  return /^\*+$/.test(text) || text.includes("...");
+  return mailboxAccountModel.isMaskedSecret(value);
 }
 
 function preferRealSecret(nextValue, currentValue) {
-  const nextText = String(nextValue || "");
-  const currentText = String(currentValue || "");
-  if (!nextText) return currentText;
-  if (isMaskedSecret(nextText) && currentText && !isMaskedSecret(currentText)) {
-    return currentText;
-  }
-  return nextText;
+  return mailboxAccountModel.preferRealSecret(nextValue, currentValue);
 }
 
 function normalizeStoredCategories(value) {
-  if (!Array.isArray(value)) return [];
-  const cleaned = [...new Set(value.map((category) => String(category || "").trim()).filter(Boolean))]
-    .filter((category) => isAllowedCategory(category));
-  return cleaned.length && cleaned.every((category) => LEGACY_SEEDED_CATEGORIES.has(category)) ? [] : cleaned;
+  return mailboxAccountModel.normalizeStoredCategories(value);
 }
 
 function isImportDateCategory(value) {
-  return IMPORT_DATE_CATEGORY_PATTERN.test(String(value || "").trim());
+  return mailboxAccountModel.isImportDateCategory(value);
 }
 
 function isAllowedCategory(value) {
-  const clean = String(value || "").trim();
-  if (!clean) return false;
-  if (RESERVED_CATEGORY_NAMES.has(clean)) return true;
-  if (isImportDateCategory(clean)) return true;
-  return !LEGACY_CATEGORY_NAMES.has(clean.toLowerCase());
+  return mailboxAccountModel.isAllowedCategory(value);
 }
 
 function sortableTime(value) {
@@ -739,169 +797,47 @@ function sortableTime(value) {
 }
 
 function sortAccounts(accounts) {
-  return [...accounts].sort((a, b) => {
-    const batchDiff = sortableTime(b.imported_at || b.created_at || b.updated_at)
-      - sortableTime(a.imported_at || a.created_at || a.updated_at);
-    if (batchDiff) return batchDiff;
-    const orderDiff = Number(a.import_order ?? 0) - Number(b.import_order ?? 0);
-    if (orderDiff) return orderDiff;
-    return String(a.email || "").localeCompare(String(b.email || ""));
-  });
+  return mailboxAccountModel.sortAccounts(accounts);
 }
 
 function applyImportBatch(rows, importedAt = new Date().toISOString()) {
-  const category = importDateCategory(importedAt);
-  rows.forEach((row, index) => {
-    row.imported_at = importedAt;
-    row.import_order = index + 1;
-    row.category = row.category || category;
-  });
-  if (category) ensureCategory(category);
-  return category;
+  return mailboxAccountModel.applyImportBatch(rows, importedAt);
 }
 
 function looksLikeJwt(value) {
-  const text = String(value || "").trim();
-  return text.split(".").length >= 3 || text.length > 80;
+  return mailboxAccountModel.looksLikeJwt(value);
 }
 
 function looksLikeMicrosoftClientId(value) {
-  const text = String(value || "").trim();
-  if (!text || looksLikeUrl(text)) return false;
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text)
-    || (/^[A-Za-z0-9._-]{20,}$/.test(text) && !looksLikeJwt(text));
+  return mailboxAccountModel.looksLikeMicrosoftClientId(value);
 }
 
 function looksLikeMicrosoftRefreshToken(value) {
-  const text = String(value || "").trim();
-  return text.length >= 20 && !looksLikeUrl(text);
+  return mailboxAccountModel.looksLikeMicrosoftRefreshToken(value);
 }
 
 function normalizeGenericMode(value) {
-  const text = String(value || "auto").trim().toLowerCase().replace("_", "-");
-  const aliases = {
-    pop: "pop3",
-    "mail-pop": "pop3",
-    "mail-pop3": "pop3",
-    "mail-imap": "imap",
-    "cloud-mail": "cloudmail",
-    skymail: "cloudmail",
-    "luck-mail": "luckmail",
-    "luckmail-api": "luckmail",
-    luckyous: "luckmail",
-  };
-  const normalized = aliases[text] || text;
-  return ["auto", "imap", "pop3", "cloudmail", "luckmail", "inbucket"].includes(normalized) ? normalized : "auto";
+  return mailboxAccountModel.normalizeGenericMode(value);
 }
 
 function isGenericApiMode(value) {
-  return ["cloudmail", "luckmail", "inbucket"].includes(normalizeGenericMode(value));
+  return mailboxAccountModel.isGenericApiMode(value);
 }
 
 function genericAccountPayload(account) {
-  return {
-    email: account.email,
-    password: account.password || account.token || "",
-    username: account.username || "",
-    mode: normalizeGenericMode(account.mode || account.provider),
-    imap_host: account.imap_host || account.imapHost || account.base_url || account.baseUrl || "",
-    imap_port: Number(account.imap_port || account.imapPort || 993),
-    pop3_host: account.pop3_host || account.pop3Host || "",
-    pop3_port: Number(account.pop3_port || account.pop3Port || 995),
-    category: account.category || account.label || "",
-  };
+  return mailboxAccountModel.genericAccountPayload(account);
 }
 
 function normalizeStoredAccount(account) {
-  if (!account || typeof account !== "object") return null;
-  const email = String(account.email || "").trim();
-  if (!email.includes("@")) return null;
-  if (account.source === "generic" || String(account.id || "").startsWith("generic:")) {
-    const payload = genericAccountPayload({ ...account, email });
-    return {
-      ...account,
-      ...payload,
-      id: `generic:${email.toLowerCase()}`,
-      source: "generic",
-      service: "其他邮箱",
-      email,
-      token: "",
-      client_id: "",
-      refresh_token: "",
-      jwt: "",
-      site_password: "",
-      category: account.category === "默认" ? "" : (payload.category || ""),
-      selected: account.selected !== false,
-    };
-  }
-  if (account.source === "temp"
-    && looksLikeMicrosoftClientId(account.category)
-    && looksLikeMicrosoftRefreshToken(account.site_password)) {
-    return {
-      ...account,
-      id: `microsoft:${email.toLowerCase()}`,
-      source: "microsoft",
-      service: "Outlook",
-      email,
-      password: String(account.jwt || account.password || ""),
-      client_id: String(account.category || ""),
-      refresh_token: String(account.site_password || ""),
-      jwt: "",
-      site_password: "",
-      category: "",
-      selected: account.selected !== false,
-    };
-  }
-  const tempCredential = String(account.jwt || (looksLikeJwt(account.password) ? account.password : "") || "");
-  const treatAsTemp = account.source === "temp"
-    || String(account.id || "").startsWith("temp:")
-    || String(account.service || "").toLowerCase().includes("cloud")
-    || Boolean(tempCredential);
-  if (treatAsTemp) {
-    return {
-      ...account,
-      id: `temp:${email.toLowerCase()}`,
-      source: "temp",
-      service: "临时邮箱",
-      email,
-      jwt: tempCredential,
-      base_url: normalizeTempWorkerUrl(account.base_url || ""),
-      password: "",
-      client_id: "",
-      refresh_token: "",
-      category: account.category === "默认" ? "" : (account.category || ""),
-      selected: account.selected !== false,
-    };
-  }
-  return {
-    ...account,
-    id: `microsoft:${email.toLowerCase()}`,
-    source: "microsoft",
-    service: account.service || "Outlook",
-    email,
-    category: account.category === "默认" ? "" : (account.category || ""),
-    selected: account.selected !== false,
-  };
+  return mailboxAccountModel.normalizeStoredAccount(account);
 }
 
 function normalizeStoredAccounts(value) {
-  if (!Array.isArray(value)) return [];
-  const byId = new Map();
-  value.forEach((account) => {
-    const normalized = normalizeStoredAccount(account);
-    if (!normalized) return;
-    if (!isAllowedCategory(normalized.category)) {
-      normalized.category = "";
-    }
-    if (normalized.source === "temp") {
-      byId.delete(`microsoft:${normalized.email.toLowerCase()}`);
-    }
-    byId.set(normalized.id, normalized);
-  });
-  return sortAccounts(byId.values());
+  return mailboxAccountModel.normalizeStoredAccounts(value);
 }
 
 function normalizeStoredMessages(value) {
+  if (mailboxMessageView?.normalizeStoredMessages) return mailboxMessageView.normalizeStoredMessages(value);
   if (!Array.isArray(value)) return [];
   return value.map((message) => ({
     ...message,
@@ -911,6 +847,7 @@ function normalizeStoredMessages(value) {
 }
 
 function normalizeMailType(value, message = null) {
+  if (mailboxMessageView?.normalizeMailType) return mailboxMessageView.normalizeMailType(value, message);
   const text = String(value || "").trim().toLowerCase();
   const haystack = [
     text,
@@ -1002,6 +939,13 @@ function hideInlineProgress(el) {
 
 function serviceInfo(source) {
   return Object.values(MAIL_SERVICES).find((service) => service.source === source)?.label || source || "-";
+}
+
+function accountCategoryOptionsBase(active, categories, emptyLabel) {
+  const selected = active || "";
+  return ["", ...categories].map((category) =>
+    `<option value="${escapeHtml(category)}"${category === selected ? " selected" : ""}>${escapeHtml(category || emptyLabel)}</option>`
+  ).join("");
 }
 
 function serviceTone(account) {
@@ -1117,49 +1061,7 @@ function normalizeServerMailbox(item, source) {
 }
 
 function mergeServerAccountsSnapshot(items) {
-  if (!Array.isArray(items) || !items.length) return { imported: 0, updated: 0 };
-  const byId = new Map(state.accounts.map((account) => [account.id, account]));
-  let imported = 0;
-  let updated = 0;
-  items.forEach((item) => {
-    if (!item?.id) return;
-    if (item.source === "temp" && item.email) {
-      byId.delete(`microsoft:${item.email.toLowerCase()}`);
-    }
-    const existing = byId.get(item.id);
-    if (existing) {
-      Object.assign(existing, item, {
-        password: preferRealSecret(item.password, existing.password),
-        client_id: preferRealSecret(item.client_id, existing.client_id),
-        refresh_token: preferRealSecret(item.refresh_token, existing.refresh_token),
-        jwt: preferRealSecret(item.jwt, existing.jwt),
-        site_password: preferRealSecret(item.site_password, existing.site_password),
-        username: item.username || existing.username || "",
-        mode: item.mode || existing.mode || "auto",
-        imap_host: item.imap_host || existing.imap_host || "",
-        imap_port: item.imap_port || existing.imap_port || 993,
-        pop3_host: item.pop3_host || existing.pop3_host || "",
-        pop3_port: item.pop3_port || existing.pop3_port || 995,
-        base_url: item.base_url || existing.base_url || "",
-        category: item.category || existing.category || "",
-        updated_at: item.updated_at || existing.updated_at || new Date().toISOString(),
-      });
-      updated += 1;
-    } else {
-      byId.set(item.id, {
-        ...item,
-        updated_at: item.updated_at || new Date().toISOString(),
-      });
-      imported += 1;
-    }
-    state.selected.add(item.id);
-    if (item.category) ensureCategory(item.category);
-  });
-  state.accounts = sortAccounts(byId.values());
-  invalidateFilteredAccountsCache();
-  saveJson(STORAGE_KEYS.accounts, state.accounts);
-  saveJson(STORAGE_KEYS.categories, state.categories);
-  return { imported, updated };
+  return mailboxWorkspace.mergeServerAccountsSnapshot(items);
 }
 
 async function syncAccountsFromServer({ silent = false } = {}) {
@@ -1210,6 +1112,35 @@ async function syncAccountsFromServer({ silent = false } = {}) {
   }
 }
 
+mailboxWorkspace = window.GAM?.mailboxWorkspace?.createMailboxWorkspace?.({
+  state,
+  els,
+  constants: {
+    SOURCE_FILTER_LABELS,
+    EMPTY_CATEGORY_LABEL,
+  },
+  helpers: {
+    escapeHtml,
+    accountSourceGroup,
+    statusClass,
+    statusLabel,
+    isAllowedCategory,
+    saveJson,
+    applyMailboxControlsState,
+    loadServerMessages,
+    sortAccounts,
+    preferRealSecret,
+    accountCategoryOptionsBase,
+  },
+  callbacks: {
+    storageKeys: {
+      accounts: STORAGE_KEYS.accounts,
+      categories: STORAGE_KEYS.categories,
+    },
+    renderAll: (...args) => renderAll(...args),
+  },
+});
+
 function setActiveView(view) {
   state.activeView = view;
   state.page = 1;
@@ -1245,6 +1176,7 @@ function escapeHtml(value) {
 }
 
 function htmlToPlainText(value) {
+  if (mailboxMessageView?.htmlToPlainText) return mailboxMessageView.htmlToPlainText(value);
   const raw = String(value || "");
   if (!raw) return "";
   if (typeof DOMParser !== "undefined") {
@@ -1293,6 +1225,7 @@ function htmlToPlainText(value) {
 }
 
 function normalizePlainMailBody(value) {
+  if (mailboxMessageView?.normalizePlainMailBody) return mailboxMessageView.normalizePlainMailBody(value);
   const lines = String(value || "")
     .replace(/\r\n?/g, "\n")
     .replace(/\u00a0/g, " ")
@@ -1314,12 +1247,14 @@ function normalizePlainMailBody(value) {
 }
 
 function renderPlainMailBody(value) {
+  if (mailboxMessageView?.renderPlainMailBody) return mailboxMessageView.renderPlainMailBody(value);
   const clean = normalizePlainMailBody(value);
   if (!clean) return '<p class="muted">这封邮件没有可展示的正文。</p>';
   return `<div class="mail-body-plain">${escapeHtml(clean).replace(/\n/g, "<br>")}</div>`;
 }
 
 function csvParts(line) {
+  if (mailboxImportHelper?.csvParts) return mailboxImportHelper.csvParts(line);
   const parts = [];
   let current = "";
   let quoted = false;
@@ -1346,6 +1281,7 @@ function csvParts(line) {
 }
 
 function pickValue(item, keys) {
+  if (mailboxImportHelper?.pickValue) return mailboxImportHelper.pickValue(item, keys);
   for (const key of keys) {
     const value = item?.[key];
     if (value !== undefined && value !== null && String(value).trim() !== "") {
@@ -1356,6 +1292,9 @@ function pickValue(item, keys) {
 }
 
 function structuredRowsFromObjects(items, source) {
+  if (mailboxImportHelper?.structuredRowsFromObjects) {
+    return mailboxImportHelper.structuredRowsFromObjects(items, source);
+  }
   const service = MAIL_SERVICES[source] || MAIL_SERVICES.microsoft;
   const rows = [];
   const errors = [];
@@ -1422,6 +1361,7 @@ function structuredRowsFromObjects(items, source) {
 }
 
 function parseStructuredText(text, source) {
+  if (mailboxImportHelper?.parseStructuredText) return mailboxImportHelper.parseStructuredText(text, source);
   const clean = String(text || "").trim();
   if (!clean) return null;
   try {
@@ -1455,10 +1395,7 @@ function parseStructuredText(text, source) {
 }
 
 function ensureCategory(name) {
-  const clean = String(name || "").trim();
-  if (isAllowedCategory(clean) && !state.categories.includes(clean)) {
-    state.categories.push(clean);
-  }
+  return mailboxWorkspace.ensureCategory(name);
 }
 
 function isBannedMessage(message) {
@@ -1518,125 +1455,31 @@ function applyBannedStateFromMessages() {
 }
 
 function removeCategory(name) {
-  const clean = String(name || "").trim();
-  if (!clean) return;
-  state.categories = state.categories.filter((category) => category !== clean);
-  state.accounts.forEach((account) => {
-    if (account.category === clean) account.category = "";
-  });
-  invalidateFilteredAccountsCache();
-  saveJson(STORAGE_KEYS.accounts, state.accounts);
-  saveJson(STORAGE_KEYS.categories, state.categories);
+  return mailboxWorkspace.removeCategory(name);
 }
 
 function accountCategoryOptions(active) {
-  const selected = active || "";
-  return ["", ...state.categories].map((category) =>
-    `<option value="${escapeHtml(category)}"${category === selected ? " selected" : ""}>${escapeHtml(category || EMPTY_CATEGORY_LABEL)}</option>`
-  ).join("");
+  return mailboxWorkspace.accountCategoryOptions(active);
 }
 
 function filterAccounts() {
-  const category = els.mailboxCategoryFilter.value;
-  const query = els.mailboxSearch.value.trim().toLowerCase();
-  const source = state.mailboxSourceFilter || "all";
-  return state.accounts.filter((account) => {
-    if (source !== "all" && accountSourceGroup(account) !== source) return false;
-    if (category !== "all" && account.category !== category) return false;
-    if (query && !account.email.toLowerCase().includes(query)) return false;
-    return true;
-  });
-}
-
-function filteredAccountsCacheKey() {
-  return JSON.stringify([
-    state.accounts.length,
-    state.accounts[0]?.id || "",
-    state.accounts[state.accounts.length - 1]?.id || "",
-    els.mailboxCategoryFilter?.value || "all",
-    els.mailboxSearch?.value.trim().toLowerCase() || "",
-    state.mailboxSourceFilter || "all",
-  ]);
+  return mailboxWorkspace.filteredAccounts();
 }
 
 function filteredAccounts() {
-  const cacheKey = filteredAccountsCacheKey();
-  if (cacheKey === state.filteredAccountsCacheKey) return state.filteredAccountsCacheRows;
-  const rows = filterAccounts();
-  state.filteredAccountsCacheKey = cacheKey;
-  state.filteredAccountsCacheRows = rows;
-  return rows;
+  return mailboxWorkspace.filteredAccounts();
 }
 
 function renderCategories() {
-  state.categories = state.categories.filter((category) => isAllowedCategory(category));
-  const categoryList = ["all", ...state.categories];
-  const options = categoryList.map((category) => {
-    if (category === "all") return `<option value="all">全部分类</option>`;
-    return `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`;
-  }).join("");
-  const mailboxValue = els.mailboxCategoryFilter.value || "all";
-  const mailValue = els.categoryFilter.value || "all";
-  els.mailboxCategoryFilter.innerHTML = options;
-  els.categoryFilter.innerHTML = options;
-  els.mailboxCategoryFilter.value = categoryList.includes(mailboxValue) ? mailboxValue : "all";
-  els.categoryFilter.value = categoryList.includes(mailValue) ? mailValue : "all";
+  return mailboxWorkspace.renderCategories();
 }
 
 function renderAccounts() {
-  const tempCount = state.accounts.filter((account) => accountSourceGroup(account) === "temp").length;
-  const msCount = state.accounts.filter((account) => accountSourceGroup(account) === "microsoft").length;
-  const genericCount = state.accounts.filter((account) => accountSourceGroup(account) === "generic").length;
-  els.tempCount.textContent = String(tempCount);
-  els.msCount.textContent = String(msCount);
-  if (els.genericCount) els.genericCount.textContent = String(genericCount);
-  els.mailboxSourceFilter?.querySelectorAll("button[data-source]").forEach((button) => {
-    const isActive = button.dataset.source === (state.mailboxSourceFilter || "all");
-    button.classList.toggle("active", isActive);
-    button.setAttribute("aria-pressed", isActive ? "true" : "false");
-  });
-  const accounts = filteredAccounts();
-  els.mailboxTotal.textContent = String(state.accounts.length);
-  const size = Number(els.mailboxPageSize.value || 20);
-  const pages = Math.max(1, Math.ceil(accounts.length / size));
-  state.mailboxPage = Math.min(Math.max(1, state.mailboxPage), pages);
-  const start = (state.mailboxPage - 1) * size;
-  const pageAccounts = accounts.slice(start, start + size);
-  els.mailboxPageText.textContent = `${state.mailboxPage} / ${pages}`;
-  els.mailboxPrevPage.disabled = state.mailboxPage <= 1;
-  els.mailboxNextPage.disabled = state.mailboxPage >= pages;
-  if (!pageAccounts.length) {
-    els.mailboxList.className = "mailbox-list empty";
-    const sourceLabel = SOURCE_FILTER_LABELS[state.mailboxSourceFilter || "all"] || "当前";
-    els.mailboxList.textContent = state.activeView === "login" ? "暂无凭证" : `${sourceLabel}筛选下暂无邮箱`;
-    return;
-  }
-  els.mailboxList.className = "mailbox-list";
-  els.mailboxList.innerHTML = pageAccounts.map((account) => {
-    const stateClass = statusClass(account.last_status);
-    const sourceText = SOURCE_FILTER_LABELS[accountSourceGroup(account)] || "其他";
-    const category = account.category || EMPTY_CATEGORY_LABEL;
-    const title = [
-      account.email,
-      `分组：${category}`,
-      sourceText,
-      statusLabel(account),
-      account.last_error_label || account.last_error || "",
-    ].filter(Boolean).join(" · ");
-    return `
-    <div class="mailbox-row refresh-state-${escapeHtml(stateClass)}${state.activeMailboxId === account.id ? " active" : ""}" data-id="${escapeHtml(account.id)}">
-      <input class="mailbox-check" type="checkbox" ${state.selected.has(account.id) ? "checked" : ""} title="${escapeHtml(title)}">
-      <button class="mailbox-row-main" type="button" title="${escapeHtml(title)}">
-        <strong>${escapeHtml(account.email)}</strong>
-        <em>${escapeHtml(category)}</em>
-      </button>
-      <button class="icon danger" type="button" aria-label="删除">×</button>
-    </div>
-  `;
-  }).join("");
+  return mailboxWorkspace.renderAccounts();
 }
 
 function mailKey(message) {
+  if (mailboxMessageView?.mailKey) return mailboxMessageView.mailKey(message);
   return [
     message.source || "",
     message.account || "",
@@ -1749,6 +1592,7 @@ function sortableDate(message) {
 }
 
 function formatTime(value) {
+  if (mailboxMessageView?.formatTime) return mailboxMessageView.formatTime(value);
   if (!value) return "-";
   const date = new Date(String(value).replace(" ", "T"));
   if (Number.isNaN(date.getTime())) return value;
@@ -1766,6 +1610,7 @@ function importDateCategory(value) {
 }
 
 function iframeDocument(content) {
+  if (mailboxMessageView?.iframeDocument) return mailboxMessageView.iframeDocument(content);
   return `<!doctype html>
 <html>
 <head>
@@ -1840,9 +1685,40 @@ function renderMessages() {
 }
 
 function renderDetail(message) {
+  if (mailboxMessageView?.renderDetailHtml) {
+    const detail = mailboxMessageView.renderDetailHtml(message);
+    els.copyCodeBtn.disabled = detail.copyDisabled;
+    els.deleteMessageBtn.disabled = detail.deleteDisabled;
+    els.mailDetail.className = detail.className;
+    if (!message) {
+      els.mailDetail.textContent = detail.html;
+      return;
+    }
+    els.mailDetail.innerHTML = detail.html;
+    const frame = els.mailDetail.querySelector(".mail-html-frame");
+    if (frame && detail.hasHtmlBody) {
+      const resizeFrame = () => {
+        try {
+          const doc = frame.contentDocument;
+          const available = Math.max(140, Math.min(420, window.innerHeight - frame.getBoundingClientRect().top - 110));
+          const contentHeight = Math.max(doc.documentElement.scrollHeight, doc.body.scrollHeight, 0) + 18;
+          frame.style.height = `${Math.min(available, Math.max(140, contentHeight))}px`;
+        } catch {
+          frame.style.height = "180px";
+        }
+      };
+      frame.addEventListener("load", () => {
+        resizeFrame();
+        window.setTimeout(resizeFrame, 80);
+        window.setTimeout(resizeFrame, 300);
+      }, { once: true });
+      frame.srcdoc = detail.frameSrcdoc;
+      window.setTimeout(resizeFrame, 120);
+    }
+    return;
+  }
   if (!message) {
     els.copyCodeBtn.disabled = true;
-    els.pushRefreshBtn.disabled = true;
     els.deleteMessageBtn.disabled = true;
     els.mailDetail.className = "mail-detail empty";
     els.mailDetail.textContent = "从左侧邮件列表选择一封邮件。";
@@ -1850,7 +1726,6 @@ function renderDetail(message) {
   }
   const codes = Array.isArray(message.codes) ? message.codes : [];
   els.copyCodeBtn.disabled = !codes.length;
-  els.pushRefreshBtn.disabled = false;
   els.deleteMessageBtn.disabled = false;
   els.mailDetail.className = `mail-detail${message.is_banned ? " banned" : ""}`;
   const normalizedType = normalizeMailType(message.mail_type, message);
@@ -2256,6 +2131,7 @@ function rowAuthFile(row) {
 }
 
 function refreshQueueKey(row) {
+  if (refreshQueueHelper?.queueKey) return refreshQueueHelper.queueKey(row);
   return [
     row.source_kind || row.source || "local",
     String(row.email || row.name || "").toLowerCase(),
@@ -2264,15 +2140,24 @@ function refreshQueueKey(row) {
 }
 
 function rowToRefreshQueueItem(row) {
+  if (refreshQueueHelper?.buildQueueItem) {
+    return refreshQueueHelper.buildQueueItem({
+      ...row,
+      account: accountForRow(row),
+    });
+  }
   const account = accountForRow(row);
   const email = row.email || account?.email || "";
+  const localService = account?.source === "microsoft"
+    ? (account.service || "Outlook")
+    : (account?.source === "generic" ? (account.service || "其他邮箱") : "临时邮箱");
   return compactObject({
     id: row.source_kind === "cpa"
       ? `cpa-refresh:${String(row.cpa_name || row.auth_index || email || row.id || crypto.randomUUID()).toLowerCase()}`
       : `refresh:${account?.id || row.account_id || email || row.id || crypto.randomUUID()}`,
     source_kind: row.source_kind || "local",
     source: row.source_kind === "cpa" ? "cpa" : (account?.source || "local"),
-    service: row.source_kind === "cpa" ? "CPA" : (account?.source === "microsoft" ? (account.service || "Outlook") : "临时邮箱"),
+    service: row.source_kind === "cpa" ? "CPA" : localService,
     email,
     name: row.name || email,
     cpa_name: row.cpa_name || "",
@@ -2293,23 +2178,40 @@ function enqueueAbnormalRows(rows) {
     return 0;
   }
   const queue = loadJson(STORAGE_KEYS.refreshQueue, []);
-  const byKey = new Map((Array.isArray(queue) ? queue : []).map((row) => [refreshQueueKey(row), row]));
+  const refreshableRows = rows.filter((row) => isRowRefreshable(row));
+  if (!refreshableRows.length) {
+    toast("没有可加入队列的账号");
+    return 0;
+  }
+  const merged = refreshQueueHelper?.mergeQueueItems
+    ? refreshQueueHelper.mergeQueueItems(queue, refreshableRows.map((row) => ({
+      ...row,
+      account: accountForRow(row),
+    })))
+    : null;
   let added = 0;
-  rows.forEach((row) => {
-    if (!isRowRefreshable(row)) return;
-    const item = rowToRefreshQueueItem(row);
-    const key = refreshQueueKey(item);
-    const previous = byKey.get(key);
-    byKey.set(key, { ...(previous || {}), ...item, status: previous?.status || "idle" });
-    if (!previous) added += 1;
+  refreshableRows.forEach((row) => {
     row.status = "queued";
     row.error = "";
     state.loginJobs.set(row.id, { status: "queued", error: "", logs: [] });
   });
-  saveJson(STORAGE_KEYS.refreshQueue, [...byKey.values()]);
+  if (merged) {
+    added = merged.added;
+    saveJson(STORAGE_KEYS.refreshQueue, merged.queue);
+  } else {
+    const byKey = new Map((Array.isArray(queue) ? queue : []).map((row) => [refreshQueueKey(row), row]));
+    refreshableRows.forEach((row) => {
+      const item = rowToRefreshQueueItem(row);
+      const key = refreshQueueKey(item);
+      const previous = byKey.get(key);
+      byKey.set(key, { ...(previous || {}), ...item, status: previous?.status || "idle" });
+      if (!previous) added += 1;
+    });
+    saveJson(STORAGE_KEYS.refreshQueue, [...byKey.values()]);
+  }
   saveAbnormalRows();
   renderLoginTable();
-  addClientLog(`已加入刷新队列：${rows.length} 个账号，新增 ${added} 个；请到凭证刷新页统一执行。`, "success");
+  addClientLog(`已加入刷新队列：${refreshableRows.length} 个账号，新增 ${added} 个；请到凭证刷新页统一执行。`, "success");
   toast(added ? `已加入队列：新增 ${added} 个` : "账号已在刷新队列");
   return added;
 }
@@ -2403,15 +2305,11 @@ function rowsFromSelectedMailboxes() {
 }
 
 function pruneSelectedMailboxesToCurrentFilter() {
-  const visibleIds = new Set(filteredAccounts().map((account) => account.id));
-  state.selected.forEach((id) => {
-    if (!visibleIds.has(id)) state.selected.delete(id);
-  });
+  return mailboxWorkspace.pruneSelectedMailboxesToCurrentFilter();
 }
 
 function invalidateFilteredAccountsCache() {
-  state.filteredAccountsCacheKey = "";
-  state.filteredAccountsCacheRows = [];
+  return mailboxWorkspace.invalidateFilteredAccountsCache();
 }
 
 function localAccountForEmail(email) {
@@ -2802,6 +2700,7 @@ Object.assign(MAIL_SERVICES.auto, {
   ].join("\n"),
 });
 function looksLikeUrl(value) {
+  if (mailboxImportHelper?.looksLikeUrl) return mailboxImportHelper.looksLikeUrl(value);
   const text = String(value || "").trim();
   if (!text) return false;
   if (/^https?:\/\//i.test(text)) return true;
@@ -2810,10 +2709,12 @@ function looksLikeUrl(value) {
 }
 
 function csvPartsFlexible(line) {
+  if (mailboxImportHelper?.csvParts) return mailboxImportHelper.csvParts(line);
   return csvParts(line);
 }
 
 function parseTempParts(parts, service, email) {
+  if (mailboxImportHelper?.parseTempParts) return mailboxImportHelper.parseTempParts(parts, service, email);
   let jwt = parts[1] || "";
   let baseUrl = "";
   let sitePassword = "";
@@ -2851,6 +2752,7 @@ function parseTempParts(parts, service, email) {
 }
 
 function parseGenericParts(parts, service, email) {
+  if (mailboxImportHelper?.parseGenericParts) return mailboxImportHelper.parseGenericParts(parts, service, email);
   const password = parts[1] || "";
   const third = parts[2] || "";
   const fourth = parts[3] || "";
@@ -2889,6 +2791,7 @@ function parseGenericParts(parts, service, email) {
 }
 
 function parseLines(text, source) {
+  if (mailboxImportHelper?.parseLines) return mailboxImportHelper.parseLines(text, source);
   const service = MAIL_SERVICES[source] || MAIL_SERVICES.microsoft;
   const structured = parseStructuredText(text, source);
   if (structured) return structured;
@@ -2931,6 +2834,23 @@ function parseLines(text, source) {
 
 function importPreviewText() {
   if (!els.importPreview) return;
+  if (mailboxImportUiHelper?.previewState) {
+    const source = els.importServiceSelect.value || state.activeImportSource || "auto";
+    const nextState = mailboxImportUiHelper.previewState({
+      source,
+      text: els.importText.value,
+      options: {
+        emptyText: "粘贴后会先预检格式，不会直接上传。",
+        includeDuplicates: true,
+        includeMissing: true,
+      },
+    });
+    mailboxImportUiHelper.applyPreviewState({
+      previewEl: els.importPreview,
+      textInput: els.importText,
+    }, nextState);
+    return;
+  }
   const source = els.importServiceSelect.value || state.activeImportSource || "auto";
   const text = els.importText.value;
   if (!text.trim()) {
@@ -3082,6 +3002,32 @@ async function importAccounts(source, text) {
 }
 
 function updateImportDialogCopy() {
+  if (mailboxImportUiHelper?.previewState) {
+    const source = els.importServiceSelect.value || "auto";
+    const service = MAIL_SERVICES[source] || MAIL_SERVICES.auto;
+    state.activeImportSource = source;
+    els.importModalEyebrow.textContent = service.label;
+    els.importModal.dataset.serviceTone = service.tone || service.source;
+    els.importModalTitle.textContent = "导入邮箱";
+    els.importFormatHint.textContent = service.hint;
+    els.importFormatHint.dataset.i18nOriginalText = service.hint;
+    const nextState = mailboxImportUiHelper.previewState({
+      source,
+      text: els.importText.value,
+      options: {
+        emptyText: "粘贴后会先预检格式，不会直接上传。",
+        includeDuplicates: true,
+        includeMissing: true,
+      },
+    });
+    mailboxImportUiHelper.applyPreviewState({
+      previewEl: els.importPreview,
+      textInput: els.importText,
+      tempApiField: els.importTempApiField,
+      tempSitePasswordField: els.importTempSitePasswordField,
+    }, nextState);
+    return;
+  }
   const source = els.importServiceSelect.value || "auto";
   const service = MAIL_SERVICES[source] || MAIL_SERVICES.auto;
   state.activeImportSource = source;
@@ -3099,6 +3045,16 @@ function updateImportDialogCopy() {
 }
 
 function openImportDialog(source = "temp") {
+  if (mailboxImportUiHelper?.setModalOpen) {
+    state.activeImportSource = source;
+    els.importServiceSelect.value = MAIL_SERVICES[source] ? source : "auto";
+    updateImportDialogCopy();
+    els.importText.value = "";
+    importPreviewText();
+    mailboxImportUiHelper.setModalOpen(els.importModal, true);
+    setTimeout(() => els.importText.focus(), 0);
+    return;
+  }
   state.activeImportSource = source;
   els.importServiceSelect.value = MAIL_SERVICES[source] ? source : "auto";
   updateImportDialogCopy();
@@ -3110,6 +3066,14 @@ function openImportDialog(source = "temp") {
 }
 
 function closeImportDialog() {
+  if (mailboxImportUiHelper?.setModalOpen) {
+    mailboxImportUiHelper.setModalOpen(els.importModal, false);
+    state.activeImportSource = "";
+    els.importText.value = "";
+    els.importFile.value = "";
+    importPreviewText();
+    return;
+  }
   els.importModal.hidden = true;
   document.body.classList.remove("modal-open");
   state.activeImportSource = "";
@@ -3147,33 +3111,11 @@ function saveGroupFromModal() {
 }
 
 function syncActiveMailboxSelection() {
-  if (!state.activeMailboxId) {
-    state.activeMailboxEmail = "";
-    return;
-  }
-  const account = state.accounts.find((item) => item.id === state.activeMailboxId);
-  if (!account) {
-    state.activeMailboxId = "";
-    state.activeMailboxEmail = "";
-    return;
-  }
-  state.activeMailboxEmail = account.email || "";
+  return mailboxWorkspace.syncActiveMailboxSelection();
 }
 
 function toggleMailboxFilter(account) {
-  if (!account) return;
-  if (state.activeMailboxId === account.id) {
-    state.activeMailboxId = "";
-    state.activeMailboxEmail = "";
-  } else {
-    state.activeMailboxId = account.id;
-    state.activeMailboxEmail = account.email || "";
-  }
-  state.selected.clear();
-  state.page = 1;
-  state.activeMessageKey = "";
-  renderAccounts();
-  loadServerMessages({ silent: true });
+  return mailboxWorkspace.toggleMailboxFilter(account);
 }
 
 async function loadImportedFile(file, textarea) {
@@ -3300,35 +3242,13 @@ async function copyActiveCode() {
   toast(`已复制验证码 ${code}`);
 }
 
-function pushActiveMessageAccountToRefresh() {
-  const message = state.messages.find((item) => mailKey(item) === state.activeMessageKey);
-  if (!message) return;
-  const email = String(message.account || "").toLowerCase();
-  const account = state.accounts.find((item) => String(item.email || "").toLowerCase() === email);
-  if (!account) {
-    toast("未找到这封邮件对应的邮箱");
+function enqueueSelectedMailboxRefresh() {
+  const rows = rowsFromSelectedMailboxes();
+  if (!rows.length) {
+    toast("先在左侧勾选要推送的邮箱");
     return;
   }
-  const queue = loadJson(STORAGE_KEYS.refreshQueue, []);
-  const rowId = `refresh:${account.id}`;
-  const exists = queue.some((row) => row.id === rowId || String(row.email || "").toLowerCase() === email);
-  if (!exists) {
-    queue.push({
-      id: rowId,
-      source_kind: "local",
-      email: account.email,
-      name: account.email,
-      account_id: account.id,
-      source: account.source,
-      service: serviceInfo(account.source),
-      status: "idle",
-      error: "",
-      logs: [],
-      auth_file: account.auth_file || null,
-    });
-    saveJson(STORAGE_KEYS.refreshQueue, queue);
-  }
-  toast(exists ? "这个邮箱已在凭证刷新池" : "已推送到凭证刷新池");
+  enqueueAbnormalRows(rows);
 }
 function renderAll({ includeMessages = true } = {}) {
   state.categories = state.categories.filter((category) => isAllowedCategory(category));
@@ -3342,23 +3262,8 @@ function renderAll({ includeMessages = true } = {}) {
 }
 
 function groupAccountsByImportDate() {
-  if (!state.accounts.length) {
-    toast("还没有可分组的邮箱");
-    return;
-  }
-  let changed = 0;
-  state.accounts.forEach((account) => {
-    const nextCategory = importDateCategory(account.created_at || account.updated_at);
-    if (!nextCategory || account.category === nextCategory) return;
-    account.category = nextCategory;
-    ensureCategory(nextCategory);
-    changed += 1;
-  });
-  invalidateFilteredAccountsCache();
-  saveJson(STORAGE_KEYS.accounts, state.accounts);
-  saveJson(STORAGE_KEYS.categories, state.categories);
-  renderAll();
-  toast(changed ? `已按导入日期分组 ${changed} 个邮箱` : "当前邮箱已经按导入日期分组");
+  const result = mailboxWorkspace.groupAccountsByImportDate(importDateCategory);
+  toast(result.message);
 }
 
 els.importMailboxBtn.addEventListener("click", () => openImportDialog("auto"));
@@ -3430,6 +3335,7 @@ els.selectAllBtn.addEventListener("click", () => {
     if (allSelected) state.selected.delete(account.id);
     else state.selected.add(account.id);
   });
+  applyMailboxControlsState();
   renderAccounts();
 });
 els.mailboxPrevPage.addEventListener("click", () => {
@@ -3456,6 +3362,7 @@ els.mailboxList.addEventListener("change", (event) => {
   if (event.target.matches(".mailbox-check")) {
     if (event.target.checked) state.selected.add(account.id);
     else state.selected.delete(account.id);
+    applyMailboxControlsState();
   }
 });
 els.mailboxList.addEventListener("click", (event) => {
@@ -3471,6 +3378,7 @@ els.mailboxList.addEventListener("click", (event) => {
   state.accounts = state.accounts.filter((item) => item.id !== row.dataset.id);
   invalidateFilteredAccountsCache();
   state.selected.delete(row.dataset.id);
+  applyMailboxControlsState();
   state.abnormalRows = state.abnormalRows.filter((item) => item.account_id !== row.dataset.id);
   state.selectedAbnormal.delete(row.dataset.id);
   if (state.activeMailboxId === row.dataset.id) {
@@ -3500,9 +3408,9 @@ els.mailList.addEventListener("click", (event) => {
 });
 els.syncBtn.addEventListener("click", syncMail);
 els.copyCodeBtn.addEventListener("click", copyActiveCode);
-els.pushRefreshBtn?.addEventListener("click", pushActiveMessageAccountToRefresh);
 els.deleteMessageBtn.addEventListener("click", deleteActiveMessage);
 els.deleteFilteredBtn?.addEventListener("click", deleteFilteredMessages);
+els.enqueueSelectedRefreshBtn?.addEventListener("click", enqueueSelectedMailboxRefresh);
 els.scanCpaBtn.addEventListener("click", scanCpaAbnormal);
 els.scanSelectedMailBtn.addEventListener("click", scanSelectedMailboxes);
 els.clearAbnormalBtn.addEventListener("click", () => {

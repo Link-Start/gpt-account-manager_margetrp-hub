@@ -81,6 +81,7 @@ const els = {
   selectAll: document.querySelector("#selectAllMailboxes"),
   copySelected: document.querySelector("#copySelectedMailboxes"),
   groupSelected: document.querySelector("#groupSelectedMailboxes"),
+  enqueueSelected: document.querySelector("#enqueueSelectedMailboxes"),
   exportBtn: document.querySelector("#exportMailboxesBtn"),
   exportBackupBtn: document.querySelector("#exportMailboxBackupBtn"),
   deleteSelected: document.querySelector("#deleteSelectedMailboxes"),
@@ -110,10 +111,14 @@ const els = {
 
 const base = window.GAM?.base;
 const scheduler = window.GAM?.scheduler;
+const refreshQueueModel = window.GAM?.refreshQueueModel;
 const authQueryToken = base?.persistAdminTokenFromQuery?.() || new URLSearchParams(window.location.search).get("token") || "";
 if (!base && authQueryToken) localStorage.setItem("ctgptm.admin.toolToken", authQueryToken);
 
 function migrateLegacyStorageKeys(names) {
+  if (base?.migrateLegacyStorageKeys) {
+    return base.migrateLegacyStorageKeys(LEGACY_STORAGE_KEYS, STORAGE_KEYS, names);
+  }
   names.forEach((name) => {
     const legacyKey = LEGACY_STORAGE_KEYS[name];
     const scopedKey = STORAGE_KEYS[name];
@@ -139,6 +144,46 @@ const state = {
   filteredCacheRows: [],
 };
 const pendingSaveTimers = new Map();
+const saveScheduler = base?.createPendingSaveScheduler?.((key, value) => saveJson(key, value)) || null;
+const REFRESH_QUEUE_STORAGE_KEY = `ctgptm.mail.refreshQueue:${workspaceId}`;
+const mailboxAccountModel = window.GAM?.mailboxAccountModel?.createMailboxAccountModel?.({
+  defaultTempWorkerUrl: "",
+  importDateCategoryPattern: IMPORT_DATE_CATEGORY_PATTERN,
+  reservedCategoryNames: [...RESERVED_CATEGORY_NAMES],
+  legacyCategoryNames: [...LEGACY_CATEGORY_NAMES],
+  serviceLabels: SERVICE_LABELS,
+});
+const mailboxImportHelper = window.GAM?.mailboxImport?.createMailboxImportHelper?.({
+  serviceMap: {
+    auto: { source: "auto", label: "自动识别" },
+    microsoft: { source: "microsoft", label: SERVICE_LABELS.microsoft },
+    temp: { source: "temp", label: SERVICE_LABELS.temp },
+    generic: { source: "generic", label: SERVICE_LABELS.generic },
+  },
+  normalizeStoredAccount: (account) => normalizeStoredAccount(account),
+  normalizeTempWorkerUrl: (value) => normalizeTempWorkerUrl(value),
+  normalizeGenericMode: (value) => normalizeGenericMode(value),
+  isGenericApiMode: (value) => isGenericApiMode(value),
+  looksLikeJwt: (value) => looksLikeJwt(value),
+  requireStructuredStart: true,
+});
+const mailboxImportUiHelper = window.GAM?.mailboxImportUi?.createMailboxImportUiHelper?.({
+  parseLines: (text, source) => parseLines(text, source),
+  sourceMeta: {
+    auto: { placeholder: IMPORT_PLACEHOLDERS.auto, tempMode: true },
+    microsoft: { placeholder: IMPORT_PLACEHOLDERS.microsoft, tempMode: false },
+    temp: { placeholder: IMPORT_PLACEHOLDERS.temp, tempMode: true },
+    generic: { placeholder: IMPORT_PLACEHOLDERS.generic, tempMode: false },
+  },
+});
+const refreshQueueHelper = refreshQueueModel?.createRefreshQueueModel?.({
+  serviceLabels: {
+    microsoft: "Outlook",
+    temp: "临时邮箱",
+    generic: "其他邮箱",
+    local: "本地邮箱",
+  },
+});
 
 const tempSettings = loadJson(STORAGE_KEYS.tempSettings, {});
 els.tempApi.value = normalizeTempWorkerUrl(tempSettings.base_url || "");
@@ -178,6 +223,10 @@ function saveJson(key, value) {
 }
 
 function scheduleSaveJson(key, value, delay = 180) {
+  if (saveScheduler?.schedule) {
+    saveScheduler.schedule(key, value, delay);
+    return;
+  }
   const existing = pendingSaveTimers.get(key);
   if (existing) clearTimeout(existing);
   const timer = setTimeout(() => {
@@ -251,6 +300,7 @@ function setStatus(text, tone = "") {
 }
 
 function isMaskedSecret(value) {
+  if (mailboxAccountModel?.isMaskedSecret) return mailboxAccountModel.isMaskedSecret(value);
   const text = String(value || "");
   return Boolean(text && (text.includes("...") || /^[*]+$/.test(text)));
 }
@@ -260,16 +310,19 @@ function usableSecret(value) {
 }
 
 function preferRealSecret(next, current) {
+  if (mailboxAccountModel?.preferRealSecret) return mailboxAccountModel.preferRealSecret(next, current);
   if (usableSecret(next)) return String(next);
   if (usableSecret(current)) return String(current);
   return String(next || current || "");
 }
 
 function normalizeTempWorkerUrl(value) {
+  if (mailboxAccountModel?.normalizeTempWorkerUrl) return mailboxAccountModel.normalizeTempWorkerUrl(value);
   return String(value || "").trim().replace(/\/+$/, "");
 }
 
 function normalizeGenericMode(value) {
+  if (mailboxAccountModel?.normalizeGenericMode) return mailboxAccountModel.normalizeGenericMode(value);
   const text = String(value || "auto").trim().toLowerCase().replace("_", "-");
   const aliases = {
     pop: "pop3",
@@ -287,10 +340,12 @@ function normalizeGenericMode(value) {
 }
 
 function isGenericApiMode(value) {
+  if (mailboxAccountModel?.isGenericApiMode) return mailboxAccountModel.isGenericApiMode(value);
   return ["cloudmail", "luckmail", "inbucket"].includes(normalizeGenericMode(value));
 }
 
 function genericAccountPayload(account) {
+  if (mailboxAccountModel?.genericAccountPayload) return mailboxAccountModel.genericAccountPayload(account);
   return {
     email: account.email,
     password: account.password || account.token || "",
@@ -317,6 +372,7 @@ function isAllowedCategory(value) {
 }
 
 function normalizeStoredCategories(value) {
+  if (mailboxAccountModel?.normalizeStoredCategories) return mailboxAccountModel.normalizeStoredCategories(value);
   const rows = Array.isArray(value) ? value : [];
   return [...new Set(rows.map((item) => String(item || "").trim()).filter((item) => isAllowedCategory(item)))]
     .sort((a, b) => a.localeCompare(b));
@@ -328,6 +384,7 @@ function sortableTime(value) {
 }
 
 function sortAccounts(accounts) {
+  if (mailboxAccountModel?.sortAccounts) return mailboxAccountModel.sortAccounts(accounts);
   return [...accounts].sort((a, b) => {
     const batchDiff = sortableTime(b.imported_at || b.created_at || b.updated_at)
       - sortableTime(a.imported_at || a.created_at || a.updated_at);
@@ -359,6 +416,7 @@ function applyImportBatch(rows, importedAt = new Date().toISOString()) {
 }
 
 function normalizeStoredAccount(account) {
+  if (mailboxAccountModel?.normalizeStoredAccount) return mailboxAccountModel.normalizeStoredAccount(account);
   if (!account || typeof account !== "object") return null;
   const email = String(account.email || "").trim();
   if (!email.includes("@")) return null;
@@ -419,6 +477,7 @@ function normalizeStoredAccount(account) {
 }
 
 function normalizeStoredAccounts(value) {
+  if (mailboxAccountModel?.normalizeStoredAccounts) return mailboxAccountModel.normalizeStoredAccounts(value);
   const byId = new Map();
   (Array.isArray(value) ? value : []).forEach((account) => {
     const normalized = normalizeStoredAccount(account);
@@ -551,6 +610,7 @@ function secretPreview(value, empty = "未填写") {
 }
 
 function csvPartsFlexible(line) {
+  if (mailboxImportHelper?.csvParts) return mailboxImportHelper.csvParts(line);
   const out = [];
   let current = "";
   let quoted = false;
@@ -577,6 +637,7 @@ function csvPartsFlexible(line) {
 }
 
 function pickValue(item, keys) {
+  if (mailboxImportHelper?.pickValue) return mailboxImportHelper.pickValue(item, keys);
   for (const key of keys) {
     const value = item?.[key];
     if (value !== undefined && value !== null && String(value).trim()) return String(value).trim();
@@ -585,6 +646,7 @@ function pickValue(item, keys) {
 }
 
 function looksLikeUrl(value) {
+  if (mailboxImportHelper?.looksLikeUrl) return mailboxImportHelper.looksLikeUrl(value);
   return /^https?:\/\//i.test(String(value || "").trim());
 }
 
@@ -593,6 +655,7 @@ function looksLikeJwt(value) {
 }
 
 function parseStructuredText(text, source) {
+  if (mailboxImportHelper?.parseStructuredText) return mailboxImportHelper.parseStructuredText(text, source);
   const clean = String(text || "").trim();
   if (!clean || !/^[\[{]/.test(clean)) return null;
   try {
@@ -607,6 +670,9 @@ function parseStructuredText(text, source) {
 }
 
 function structuredRowsFromObjects(items, source) {
+  if (mailboxImportHelper?.structuredRowsFromObjects) {
+    return mailboxImportHelper.structuredRowsFromObjects(items, source);
+  }
   const rows = [];
   const errors = [];
   items.forEach((item, index) => {
@@ -658,6 +724,9 @@ function structuredRowsFromObjects(items, source) {
 }
 
 function parseGenericParts(parts, email) {
+  if (mailboxImportHelper?.parseGenericParts) {
+    return mailboxImportHelper.parseGenericParts(parts, { source: "generic", label: SERVICE_LABELS.generic }, email);
+  }
   const password = parts[1] || "";
   const third = parts[2] || "";
   const fourth = parts[3] || "";
@@ -694,6 +763,7 @@ function parseGenericParts(parts, email) {
 }
 
 function parseLines(text, source) {
+  if (mailboxImportHelper?.parseLines) return mailboxImportHelper.parseLines(text, source);
   const structured = parseStructuredText(text, source);
   if (structured) return structured;
   const rows = [];
@@ -877,6 +947,9 @@ function syncSelectionUi(visible = visibleAccountsForCurrentPage()) {
   const selectedOnPage = visibleIds.filter((id) => state.selected.has(id)).length;
   els.selectAll.checked = Boolean(visible.length && selectedOnPage === visible.length);
   els.selectAll.indeterminate = Boolean(selectedOnPage && selectedOnPage < visible.length);
+  if (els.enqueueSelected) {
+    els.enqueueSelected.disabled = !selectedRows().length;
+  }
 }
 
 function renderGroupFilter() {
@@ -1000,6 +1073,36 @@ async function copyText(text, message) {
   toast(message);
 }
 
+function enqueueSelectedAccounts() {
+  const rows = resolvedMailboxActionRows({ fallback: "none" });
+  if (!rows.length) {
+    toast("先选择邮箱");
+    return;
+  }
+  if (!refreshQueueHelper?.mergeQueueItems) {
+    toast("刷新队列模块未就绪");
+    return;
+  }
+  const existingQueue = loadJson(REFRESH_QUEUE_STORAGE_KEY, []);
+  const merged = refreshQueueHelper.mergeQueueItems(existingQueue, rows.map((account) => ({
+    account,
+    id: `refresh:${account.id}`,
+    source_kind: "local",
+    email: account.email,
+    name: account.email,
+    account_id: account.id,
+    source: account.source,
+    service: account.service || SERVICE_LABELS[account.source] || "本地邮箱",
+    status: "idle",
+    error: "",
+    logs: [],
+    auth_file: account.auth_file || null,
+  })));
+  saveJson(REFRESH_QUEUE_STORAGE_KEY, merged.queue);
+  setStatus(`已加入刷新队列 ${rows.length} 个邮箱，新增 ${merged.added} 个。`, "ok");
+  toast(merged.added ? `已加入刷新队列 ${merged.added} 个` : "这些邮箱已在刷新队列");
+}
+
 function downloadJsonFile(fileName, value) {
   const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json;charset=utf-8" });
   downloadBlob(fileName, blob);
@@ -1115,6 +1218,23 @@ async function persistImportedRows(rows) {
 }
 
 function updateImportPreview() {
+  if (mailboxImportUiHelper?.previewState) {
+    const source = els.importSource.value || "auto";
+    const nextState = mailboxImportUiHelper.previewState({
+      source,
+      text: els.importText.value,
+      options: {
+        emptyText: "粘贴后会先预检格式。",
+      },
+    });
+    mailboxImportUiHelper.applyPreviewState({
+      previewEl: els.importPreview,
+      textInput: els.importText,
+      tempApiField: els.tempApiField,
+      tempSitePasswordField: els.tempSitePasswordField,
+    }, nextState);
+    return;
+  }
   const source = els.importSource.value || "auto";
   const text = els.importText.value;
   const tempMode = source === "temp" || source === "auto";
@@ -1142,15 +1262,21 @@ function updateImportPreview() {
 }
 
 function openImportModal() {
-  els.importModal.hidden = false;
-  document.body.classList.add("modal-open");
+  if (mailboxImportUiHelper?.setModalOpen) mailboxImportUiHelper.setModalOpen(els.importModal, true);
+  else {
+    els.importModal.hidden = false;
+    document.body.classList.add("modal-open");
+  }
   updateImportPreview();
   setTimeout(() => els.importText.focus(), 0);
 }
 
 function closeImportModal() {
-  els.importModal.hidden = true;
-  document.body.classList.remove("modal-open");
+  if (mailboxImportUiHelper?.setModalOpen) mailboxImportUiHelper.setModalOpen(els.importModal, false);
+  else {
+    els.importModal.hidden = true;
+    document.body.classList.remove("modal-open");
+  }
   els.importText.value = "";
   els.importFile.value = "";
   els.importFileName.textContent = "也可以直接粘贴到下面";
@@ -1350,6 +1476,7 @@ els.copySelected.addEventListener("click", async () => {
 });
 
 els.groupSelected.addEventListener("click", setSelectedGroup);
+els.enqueueSelected?.addEventListener("click", enqueueSelectedAccounts);
 els.deleteSelected.addEventListener("click", () => deleteAccounts(resolvedMailboxActionRows()));
 els.exportBtn.addEventListener("click", () => {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -1370,8 +1497,8 @@ els.exportBackupBtn.addEventListener("click", () => {
     categories: state.categories,
     accounts: state.accounts,
   });
-  setStatus(`Backup exported: ${state.accounts.length} mailboxes`, "ok");
-  toast(`Backup exported: ${state.accounts.length} mailboxes`);
+  setStatus(`已导出 JSON 备份 ${state.accounts.length} 个邮箱。`, "ok");
+  toast(`已导出 JSON 备份 ${state.accounts.length} 个邮箱`);
 });
 
 renderAll();

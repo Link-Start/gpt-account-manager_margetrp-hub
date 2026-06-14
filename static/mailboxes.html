@@ -136,6 +136,7 @@
           <label class="mailbox-select-all"><input id="selectAllMailboxes" type="checkbox"> 全选当前页</label>
           <button id="copySelectedMailboxes" type="button">批量复制</button>
           <button id="groupSelectedMailboxes" type="button">批量设置分组</button>
+          <button id="enqueueSelectedMailboxes" type="button">加入刷新队列</button>
           <button id="exportMailboxesBtn" type="button">导出邮箱 TXT</button>
           <button id="exportMailboxBackupBtn" type="button">导出 JSON 备份</button>
           <button id="deleteSelectedMailboxes" class="danger" type="button">批量删除</button>
@@ -234,6 +235,10 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/shared/base.js?v={{APP_VERSION}}" defer></script>
   <script src="/shared/scheduler.js?v={{APP_VERSION}}" defer></script>
+  <script src="/shared/mailbox-account-model.js?v={{APP_VERSION}}" defer></script>
+  <script src="/shared/mailbox-import.js?v={{APP_VERSION}}" defer></script>
+  <script src="/shared/mailbox-import-ui.js?v={{APP_VERSION}}" defer></script>
+  <script src="/shared/refresh-queue-model.js?v={{APP_VERSION}}" defer></script>
   <script src="/mailboxes.js?v={{APP_VERSION}}" defer></script>
 </body>
 </html>

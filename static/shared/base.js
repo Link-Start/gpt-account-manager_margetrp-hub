@@ -39,6 +39,19 @@
     return headers;
   }
 
+  function migrateLegacyStorageKeys(legacyKeys = {}, scopedKeys = {}, names = []) {
+    names.forEach((name) => {
+      const legacyKey = legacyKeys[name];
+      const scopedKey = scopedKeys[name];
+      if (!legacyKey || !scopedKey || legacyKey === scopedKey) return;
+      if (localStorage.getItem(scopedKey) !== null) return;
+      const raw = localStorage.getItem(legacyKey);
+      if (raw === null) return;
+      localStorage.setItem(scopedKey, raw);
+      localStorage.removeItem(legacyKey);
+    });
+  }
+
   function repairMojibakeText(value, fixes) {
     if (typeof value !== "string" || !value) return value;
     let text = value;
@@ -109,6 +122,34 @@
     }
   }
 
+  function createPendingSaveScheduler(saveFn) {
+    const pending = new Map();
+    function schedule(key, value, delay = 200) {
+      const existing = pending.get(key);
+      if (existing) clearTimeout(existing);
+      const timer = setTimeout(() => {
+        pending.delete(key);
+        saveFn(key, value);
+      }, delay);
+      pending.set(key, timer);
+    }
+    function clear(key) {
+      const timer = pending.get(key);
+      if (!timer) return;
+      clearTimeout(timer);
+      pending.delete(key);
+    }
+    function clearAll() {
+      pending.forEach((timer) => clearTimeout(timer));
+      pending.clear();
+    }
+    return {
+      schedule,
+      clear,
+      clearAll,
+    };
+  }
+
   async function readJsonResponse(response, label, options = {}) {
     const text = await response.text();
     if (!text) {
@@ -163,8 +204,10 @@
     getWorkspaceId,
     rememberedAdminToken,
     apiHeaders,
+    migrateLegacyStorageKeys,
     loadJson,
     saveJson,
+    createPendingSaveScheduler,
     readJsonResponse,
     escapeHtml,
     repairMojibakeText,

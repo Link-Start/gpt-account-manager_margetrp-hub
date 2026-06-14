@@ -72,12 +72,21 @@ const MOJIBAKE_TEXT_FIXES = new Map([
 ]);
 const base = window.GAM?.base;
 const scheduler = window.GAM?.scheduler;
+const refreshErrors = window.GAM?.refreshErrors;
+const refreshSourceList = window.GAM?.refreshSourceList;
+const refreshManualCode = window.GAM?.refreshManualCode;
+const refreshPhonePool = window.GAM?.refreshPhonePool;
+const refreshQueueModel = window.GAM?.refreshQueueModel;
+const refreshQueueView = window.GAM?.refreshQueueView;
 const authQueryToken = base?.persistAdminTokenFromQuery?.() || new URLSearchParams(window.location.search).get("token") || "";
 if (!base && authQueryToken) {
   localStorage.setItem("ctgptm.admin.toolToken", authQueryToken);
 }
 
 function migrateLegacyStorageKeys(names) {
+  if (base?.migrateLegacyStorageKeys) {
+    return base.migrateLegacyStorageKeys(LEGACY_STORAGE_KEYS, STORAGE_KEYS, names);
+  }
   names.forEach((name) => {
     const legacyKey = LEGACY_STORAGE_KEYS[name];
     const scopedKey = STORAGE_KEYS[name];
@@ -127,6 +136,15 @@ const state = {
   jobPollErrors: new Map(),
 };
 const pendingSaveTimers = new Map();
+let refreshErrorsHelper = null;
+let refreshQueueViewHelper = null;
+let refreshSourceListHelper = null;
+let refreshManualCodeHelper = null;
+let refreshPhonePoolHelper = null;
+let mailboxImportHelper = null;
+let mailboxImportUiHelper = null;
+let refreshQueueHelper = null;
+const saveScheduler = base?.createPendingSaveScheduler?.((key, value) => saveJson(key, value)) || null;
 
 const MAX_LOGIN_ATTEMPTS = 3;
 const ACCOUNT_COOLDOWN_MS = 6500;
@@ -304,6 +322,10 @@ function saveJson(key, value) {
 }
 
 function scheduleSaveJson(key, value, delay = 220) {
+  if (saveScheduler?.schedule) {
+    saveScheduler.schedule(key, value, delay);
+    return;
+  }
   const existing = pendingSaveTimers.get(key);
   if (existing) clearTimeout(existing);
   const timer = setTimeout(() => {
@@ -531,11 +553,18 @@ const LOG_THROTTLE_MS = {
   mail_code_poll: 2500,
 };
 
+refreshErrorsHelper = refreshErrors?.createRefreshErrors?.({
+  errorManual: ERROR_MANUAL,
+  logStepLabels: LOG_STEP_LABELS,
+});
+
 function errorCodeLabel(code) {
+  if (refreshErrorsHelper?.errorCodeLabel) return refreshErrorsHelper.errorCodeLabel(code);
   return ERROR_MANUAL[String(code || "")] || String(code || "login_failed");
 }
 
 function inferErrorCode(job = {}) {
+  if (refreshErrorsHelper?.inferErrorCode) return refreshErrorsHelper.inferErrorCode(job);
   const current = String(job.error_code || job.code || "").trim();
   if (current && current !== "login_failed") return current;
   const text = `${job.error || ""} ${job.error_hint || ""} ${job.message || ""}`.toLowerCase();
@@ -598,6 +627,7 @@ function inferErrorCode(job = {}) {
 }
 
 function compactText(value, max = 120) {
+  if (refreshErrorsHelper?.compactText) return refreshErrorsHelper.compactText(value, max);
   const clean = String(value || "")
     .replace(/https?:\/\/\S+/g, "[link]")
     .replace(/\s+/g, " ")
@@ -606,6 +636,7 @@ function compactText(value, max = 120) {
 }
 
 function compactLogMessage(message, meta = {}) {
+  if (refreshErrorsHelper?.compactLogMessage) return refreshErrorsHelper.compactLogMessage(message, meta);
   const email = meta.email || String(message || "").match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || "";
   const step = String(meta.step || "");
   const rawCode = String(meta.error_code || meta.code || "");
@@ -670,6 +701,7 @@ function hasCredentialValue(value) {
 }
 
 function isCodePickupError(code, text = "") {
+  if (refreshErrorsHelper?.isCodePickupError) return refreshErrorsHelper.isCodePickupError(code, text);
   const rawCode = String(code || "").toLowerCase();
   const rawText = String(text || "").toLowerCase();
   return rawCode === "verification_code_missing"
@@ -682,6 +714,7 @@ function isCodePickupError(code, text = "") {
 }
 
 function isPhoneVerificationError(code, text = "") {
+  if (refreshErrorsHelper?.isPhoneVerificationError) return refreshErrorsHelper.isPhoneVerificationError(code, text);
   const rawCode = String(code || "").toLowerCase();
   const rawText = String(text || "").toLowerCase();
   return rawCode === "phone_verification_required"
@@ -798,6 +831,43 @@ function normalizeTempWorkerUrl(value) {
 function isGenericApiMode(value) {
   return ["cloudmail", "luckmail", "inbucket"].includes(normalizeGenericMode(value));
 }
+
+mailboxImportHelper = window.GAM?.mailboxImport?.createMailboxImportHelper?.({
+  serviceMap: {
+    auto: { source: "auto", label: "自动识别" },
+    microsoft: { source: "microsoft", label: "Outlook" },
+    temp: { source: "temp", label: "临时邮箱" },
+    generic: { source: "generic", label: "其他邮箱" },
+  },
+  normalizeStoredAccount: (account) => account,
+  normalizeTempWorkerUrl: (value) => normalizeTempWorkerUrl(value),
+  normalizeGenericMode: (value) => normalizeGenericMode(value),
+  isGenericApiMode: (value) => isGenericApiMode(value),
+  looksLikeJwt: (value) => looksLikeJwt(value),
+  allowSingleStructuredObject: true,
+  requireStructuredStart: true,
+  flexibleTempFields: true,
+  structuredArrayKeys: ["accounts", "addresses", "items", "data"],
+});
+
+mailboxImportUiHelper = window.GAM?.mailboxImportUi?.createMailboxImportUiHelper?.({
+  parseLines: (text, source) => parseLines(text, source),
+  sourceMeta: {
+    auto: { placeholder: IMPORT_PLACEHOLDERS.auto, tempMode: true },
+    microsoft: { placeholder: IMPORT_PLACEHOLDERS.microsoft, tempMode: false },
+    temp: { placeholder: IMPORT_PLACEHOLDERS.temp, tempMode: true },
+    generic: { placeholder: IMPORT_PLACEHOLDERS.generic, tempMode: false },
+  },
+});
+
+refreshQueueHelper = refreshQueueModel?.createRefreshQueueModel?.({
+  serviceLabels: {
+    microsoft: "Outlook",
+    generic: "其他邮箱",
+    temp: "临时邮箱",
+    local: "本地邮箱",
+  },
+});
 
 function csvPartsFlexible(line) {
   const out = [];
@@ -943,6 +1013,7 @@ function parseGenericParts(parts, email) {
 }
 
 function parseLines(text, source) {
+  if (mailboxImportHelper?.parseLines) return mailboxImportHelper.parseLines(text, source);
   const structured = parseStructuredText(text, source);
   if (structured) return structured;
   const rows = [];
@@ -1016,6 +1087,23 @@ function pickupMailboxCopyLine(account) {
 
 function updatePickupImportPreview() {
   if (!els.pickupImportPreview) return;
+  if (mailboxImportUiHelper?.previewState) {
+    const source = els.pickupImportSource?.value || "auto";
+    const nextState = mailboxImportUiHelper.previewState({
+      source,
+      text: els.pickupImportText?.value || "",
+      options: {
+        emptyText: "粘贴后会先预检格式。",
+      },
+    });
+    mailboxImportUiHelper.applyPreviewState({
+      previewEl: els.pickupImportPreview,
+      textInput: els.pickupImportText,
+      tempApiField: els.pickupTempApiField,
+      tempSitePasswordField: els.pickupTempSitePasswordField,
+    }, nextState);
+    return;
+  }
   const source = els.pickupImportSource?.value || "auto";
   const text = els.pickupImportText?.value || "";
   const tempMode = source === "temp" || source === "auto";
@@ -1052,16 +1140,22 @@ function openPickupImportModal() {
   if (els.pickupTempSitePassword && !els.pickupTempSitePassword.value.trim()) {
     els.pickupTempSitePassword.value = (els.tempSyncSitePassword?.value || "").trim();
   }
-  els.pickupImportModal.hidden = false;
-  document.body.classList.add("modal-open");
+  if (mailboxImportUiHelper?.setModalOpen) mailboxImportUiHelper.setModalOpen(els.pickupImportModal, true);
+  else {
+    els.pickupImportModal.hidden = false;
+    document.body.classList.add("modal-open");
+  }
   updatePickupImportPreview();
   setTimeout(() => els.pickupImportText?.focus(), 0);
 }
 
 function closePickupImportModal() {
   if (!els.pickupImportModal) return;
-  els.pickupImportModal.hidden = true;
-  document.body.classList.remove("modal-open");
+  if (mailboxImportUiHelper?.setModalOpen) mailboxImportUiHelper.setModalOpen(els.pickupImportModal, false);
+  else {
+    els.pickupImportModal.hidden = true;
+    document.body.classList.remove("modal-open");
+  }
   if (els.pickupImportText) els.pickupImportText.value = "";
   if (els.pickupImportFile) els.pickupImportFile.value = "";
   if (els.pickupImportFileName) els.pickupImportFileName.textContent = "也可以直接粘贴到下面";
@@ -1327,6 +1421,7 @@ function compactQueueRowForStorage(row) {
 }
 
 function normalizePhonePool(value) {
+  if (refreshPhonePoolHelper?.normalizePhonePool) return refreshPhonePoolHelper.normalizePhonePool(value);
   if (!Array.isArray(value)) return [];
   const seen = new Set();
   return value.map((item) => {
@@ -1364,6 +1459,29 @@ function sourceLabel(account) {
   if (account.source === "microsoft") return account.service || "Outlook";
   if (account.source === "generic") return account.service || "其他邮箱";
   return "临时邮箱";
+}
+
+function mergeSelectedAccountsIntoQueue(accounts) {
+  const merged = refreshQueueHelper?.mergeQueueItems
+    ? refreshQueueHelper.mergeQueueItems(state.queue, accounts.map((account) => ({
+      account,
+      id: `refresh:${account.id}`,
+      source_kind: "local",
+      email: account.email,
+      name: account.email,
+      account_id: account.id,
+      source: account.source,
+      service: sourceLabel(account),
+      status: "idle",
+      error: "",
+      logs: [],
+      auth_file: account.auth_file || null,
+    })))
+    : { queue: state.queue.slice(), added: 0, selectedIds: [] };
+  state.queue = merged.queue;
+  merged.selectedIds.forEach((id) => state.selectedQueue.add(id));
+  saveQueue();
+  return merged;
 }
 
 function sourceTone(account) {
@@ -1430,101 +1548,31 @@ function sourceRefreshState(account) {
 }
 
 function accountOptions(active) {
-  const options = [
-    ["all", "全部状态"],
-    ["success", "成功"],
-    ["failed", "失败"],
-    ["needs_code", "需要接码"],
-  ];
-  return options.map(([value, label]) => {
-    return `<option value="${escapeHtml(value)}"${value === active ? " selected" : ""}>${escapeHtml(label)}</option>`;
-  }).join("");
+  return refreshSourceListHelper?.accountOptions?.(active) || "";
 }
 
 function invalidateSourceAccountsCache() {
-  state.filteredAccountsCacheKey = "";
-  state.filteredAccountsCacheRows = [];
+  refreshSourceListHelper?.invalidateSourceAccountsCache?.();
 }
 
 function sourceAccountsCacheKey() {
-  return JSON.stringify([
-    state.accounts.length,
-    state.accounts[0]?.id || "",
-    state.accounts[state.accounts.length - 1]?.id || "",
-    els.sourceSearch?.value.trim().toLowerCase() || "",
-    els.sourceType?.value || "all",
-    els.sourceCategory?.value || "all",
-    state.queue.length,
-    state.queue.map((row) => `${accountEmailKey(row.email || row.name)}:${rowState(row).status || "idle"}:${Boolean(row.auth_file)}`).join("|"),
-    Array.from(state.savedRefreshResults.keys()).sort().join("|"),
-  ]);
+  return refreshSourceListHelper?.sourceAccountsCacheKey?.() || "[]";
 }
 
 function filteredAccounts() {
-  const cacheKey = sourceAccountsCacheKey();
-  if (cacheKey === state.filteredAccountsCacheKey) return state.filteredAccountsCacheRows;
-  const query = els.sourceSearch.value.trim().toLowerCase();
-  const type = els.sourceType.value;
-  const category = els.sourceCategory.value;
-  const rows = state.accounts.filter((account) => {
-    if (type !== "all" && account.source !== type) return false;
-    const refreshState = sourceRefreshState(account);
-    if (category !== "all" && refreshState.status !== category) return false;
-    if (query && !String(account.email || "").toLowerCase().includes(query)) return false;
-    return true;
-  });
-  state.filteredAccountsCacheKey = cacheKey;
-  state.filteredAccountsCacheRows = rows;
-  return rows;
+  return refreshSourceListHelper?.filteredAccounts?.() || [];
 }
 
 function visibleSourceAccountsForCurrentPage() {
-  const accounts = filteredAccounts();
-  const size = Number(els.sourcePageSize.value || 20);
-  const pages = Math.max(1, Math.ceil(accounts.length / size));
-  const page = Math.min(Math.max(1, state.sourcePage), pages);
-  return accounts.slice((page - 1) * size, page * size);
+  return refreshSourceListHelper?.visibleSourceAccountsForCurrentPage?.() || [];
 }
 
 function renderSources() {
-  els.sourceCategory.innerHTML = accountOptions(els.sourceCategory.value || "all");
-  const accounts = filteredAccounts();
-  els.sourceTotal.textContent = String(accounts.length);
-  const size = Number(els.sourcePageSize.value || 20);
-  const pages = Math.max(1, Math.ceil(accounts.length / size));
-  state.sourcePage = Math.min(Math.max(1, state.sourcePage), pages);
-  const pageItems = accounts.slice((state.sourcePage - 1) * size, state.sourcePage * size);
-  const selectedVisible = pageItems.filter((account) => state.selectedAccounts.has(account.id)).length;
-  if (els.sourceSelectAll) {
-    els.sourceSelectAll.textContent = pageItems.length && selectedVisible === pageItems.length ? "取消全选" : "全选当前页";
-  }
-  els.sourcePageText.textContent = `${state.sourcePage} / ${pages}`;
-  els.sourcePrev.disabled = state.sourcePage <= 1;
-  els.sourceNext.disabled = state.sourcePage >= pages;
-  if (!pageItems.length) {
-    els.sourceList.className = "mailbox-list empty";
-    els.sourceList.textContent = state.accounts.length ? "没有匹配的邮箱" : "请先在账号管理页导入邮箱";
-    return;
-  }
-  els.sourceList.className = "mailbox-list";
-  els.sourceList.innerHTML = pageItems.map((account) => {
-    const refreshState = sourceRefreshState(account);
-    return `
-      <div class="mailbox-row refresh-source-row refresh-state-${escapeHtml(refreshState.tone)}" data-id="${escapeHtml(account.id)}" title="${escapeHtml(refreshState.message)}">
-        <label class="refresh-source-check">
-          <input type="checkbox" ${state.selectedAccounts.has(account.id) ? "checked" : ""}>
-          <span class="refresh-source-main">
-            <strong>${escapeHtml(account.email)}</strong>
-            <em><b class="source-badge ${escapeHtml(sourceTone(account))}">${escapeHtml(sourceLabel(account))}</b></em>
-          </span>
-        </label>
-        <span class="source-badge refresh-badge ${escapeHtml(refreshState.tone)}">${escapeHtml(refreshState.label)}</span>
-      </div>
-    `;
-  }).join("");
+  refreshSourceListHelper?.renderSources?.();
 }
 
 function queueKey(account) {
+  if (refreshQueueHelper?.queueKey) return refreshQueueHelper.queueKey(account);
   return [
     account.source_kind || account.source || "local",
     String(account.email || account.name || "").toLowerCase(),
@@ -1533,73 +1581,23 @@ function queueKey(account) {
 }
 
 function sourceFilterScopeActive() {
-  return Boolean(
-    els.sourceSearch?.value.trim()
-    || (els.sourceType?.value || "all") !== "all"
-    || (els.sourceCategory?.value || "all") !== "all"
-  );
+  return refreshSourceListHelper?.sourceFilterScopeActive?.() || false;
 }
 
 function selectedSourceAccounts() {
-  const visibleAccounts = filteredAccounts();
-  const visibleSelected = visibleAccounts.filter((account) => state.selectedAccounts.has(account.id));
-  if (visibleSelected.length) return visibleSelected;
-  return [];
+  return refreshSourceListHelper?.selectedSourceAccounts?.() || [];
 }
 
 function accountMailVerified(account) {
-  return ["ok", "no_code"].includes(String(account.mail_verify_status || account.last_status || "").toLowerCase());
+  return refreshSourceListHelper?.accountMailVerified?.(account) || false;
 }
 
 function accountMailFailed(account) {
-  return ["error", "failed"].includes(String(account.mail_verify_status || account.last_status || "").toLowerCase());
+  return refreshSourceListHelper?.accountMailFailed?.(account) || false;
 }
 
 function accountFetchPayload(account) {
-  if (account.source === "generic") {
-    return {
-      source: "generic",
-      provider: normalizeGenericMode(account.mode || account.provider),
-      limit: 12,
-      email: account.email,
-      emails: [account.email],
-      accounts: [],
-      temp_addresses: [],
-      generic_accounts: [genericAccountPayload(account)],
-    };
-  }
-  if (account.source === "temp") {
-    return {
-      source: "temp",
-      provider: "auto",
-      limit: 12,
-      email: account.email,
-      emails: [account.email],
-      temp_addresses: [{
-        email: account.email,
-        jwt: account.jwt,
-        base_url: account.base_url,
-        site_password: account.site_password,
-      }],
-      accounts: [],
-      generic_accounts: [],
-    };
-  }
-  return {
-    source: "microsoft",
-    provider: "auto",
-    limit: 12,
-    email: account.email,
-    emails: [account.email],
-    accounts: [{
-      email: account.email,
-      password: account.password,
-      client_id: account.client_id,
-      refresh_token: account.refresh_token,
-    }],
-    temp_addresses: [],
-    generic_accounts: [],
-  };
+  return refreshSourceListHelper?.accountFetchPayload?.(account) || {};
 }
 
 function messageLooksLikeVerification(message) {
@@ -1616,181 +1614,19 @@ function messageLooksLikeVerification(message) {
 }
 
 function applyMailboxVerifyResult(account, result) {
-  const codes = Array.isArray(result?.codes) ? result.codes.filter(Boolean) : [];
-  const hasCode = Boolean(result?.has_verification_code || result?.first_code || codes.length);
-  account.last_check_at = result?.checked_at || new Date().toISOString();
-  account.last_message_count = Number(result?.message_count ?? 0);
-  account.last_error = "";
-  account.last_error_code = "";
-  account.last_error_label = "";
-  account.last_error_hint = "";
-  if (!result?.ok) {
-    const rawError = (result?.errors || []).filter(Boolean).join("；") || result?.error || "收信失败";
-    const code = result?.error_code || inferErrorCode({ error: rawError, error_hint: result?.error_hint || "" }) || "mail_pickup_unavailable";
-    account.mail_verify_status = "error";
-    account.last_status = "error";
-    account.last_error = compactText(rawError, 180);
-    account.last_error_code = code;
-    account.last_error_label = result?.error_label || errorCodeLabel(code);
-    account.last_error_hint = result?.error_hint || account.last_error_label;
-    return { status: "failed", code, label: account.last_error_label };
-  }
-  account.mail_verify_status = hasCode ? "ok" : "no_code";
-  account.last_status = account.mail_verify_status;
-  return {
-    status: hasCode ? "ok" : "no_code",
-    code: hasCode ? "" : "mail_verify_no_code",
-    label: hasCode ? "可收件，已发现验证码邮件" : "可收件，未发现验证码邮件",
-  };
+  return refreshSourceListHelper?.applyMailboxVerifyResult?.(account, result) || { status: "failed", code: "", label: "" };
 }
 
 async function verifySelectedMailboxes() {
-  const selected = selectedSourceAccounts();
-  if (!selected.length) {
-    toast("先在左侧选择邮箱");
-    return;
-  }
-  const oldText = els.verifySelectedSources?.textContent || "验证邮箱";
-  if (els.verifySelectedSources) {
-    els.verifySelectedSources.disabled = true;
-    els.verifySelectedSources.textContent = "验证中";
-  }
-  addLog(`验证邮箱：${selected.length} 个`, "info", { step: "mail_verify" });
-  let ok = 0;
-  let noCode = 0;
-  let failed = 0;
-  try {
-    for (const account of selected) {
-      addLog(`${account.email} 验证邮箱`, "info", { step: "mail_verify", email: account.email });
-      try {
-        const response = await fetch("/client-api/fetch", {
-          method: "POST",
-          headers: apiHeaders(),
-          body: JSON.stringify(accountFetchPayload(account)),
-        });
-        const data = await readJsonResponse(response, "验证邮箱失败");
-        const result = (data.results || []).find((item) => accountEmailKey(item?.email) === accountEmailKey(account.email)) || (data.results || [])[0];
-        const applied = applyMailboxVerifyResult(account, result || {
-          ok: false,
-          error_code: "mail_pickup_unavailable",
-          error_label: "收信失败",
-          error: "邮箱没有返回取信结果",
-          messages: [],
-        });
-        if (applied.status === "ok") {
-          ok += 1;
-          addLog(`${account.email} 可收件，已发现验证码邮件`, "success", { step: "mail_verify", email: account.email });
-        } else if (applied.status === "no_code") {
-          noCode += 1;
-          addLog(`${account.email} 可收件，未发现验证码邮件`, "warning", { error_code: "mail_verify_no_code", email: account.email });
-        } else {
-          failed += 1;
-          addLog(`${account.email} ${applied.label}`, "error", { error_code: applied.code || "mail_pickup_unavailable", email: account.email });
-        }
-      } catch (error) {
-        failed += 1;
-        const details = error.details || { error: error.message || "验证邮箱失败", error_code: "mail_pickup_unavailable" };
-        applyMailboxVerifyResult(account, {
-          ok: false,
-          error: details.error,
-          error_code: details.error_code || "mail_pickup_unavailable",
-          error_label: errorCodeLabel(details.error_code || "mail_pickup_unavailable"),
-          error_hint: details.error_hint || "",
-          messages: [],
-        });
-        addLog(`${account.email} ${errorCodeLabel(details.error_code || "mail_pickup_unavailable")}`, "error", {
-          error_code: details.error_code || "mail_pickup_unavailable",
-          email: account.email,
-        });
-      }
-    }
-    invalidateSourceAccountsCache();
-    saveJson(STORAGE_KEYS.accounts, state.accounts);
-    renderSources();
-    toast(`验证完成：可用 ${ok + noCode}，失败 ${failed}`);
-    addLog(`验证完成：有验证码 ${ok}，未发现验证码 ${noCode}，失败 ${failed}`, failed ? "warning" : "success", { step: "mail_verify" });
-  } finally {
-    if (els.verifySelectedSources) {
-      els.verifySelectedSources.disabled = false;
-      els.verifySelectedSources.textContent = oldText;
-    }
-  }
+  return refreshSourceListHelper?.verifySelectedMailboxes?.();
 }
 
 function addSelectedToQueue() {
-  const selected = selectedSourceAccounts();
-  if (!selected.length) {
-    toast("先在左侧选择邮箱");
-    return;
-  }
-  const failed = selected.filter(accountMailFailed);
-  const unverified = selected.filter((account) => !accountMailVerified(account) && !accountMailFailed(account));
-  if (failed.length || unverified.length) {
-    failed.forEach((account) => addLog(`${account.email} ${account.last_error_label || "取码邮箱不可用"}`, "error", {
-      error_code: account.last_error_code || "mail_pickup_unavailable",
-      email: account.email,
-    }));
-    if (unverified.length) {
-      addLog(`有 ${unverified.length} 个邮箱还没有验证，先点“验证邮箱”`, "warning", { error_code: "mail_verification_required" });
-    }
-    toast("请先验证邮箱，失败邮箱不会加入队列");
-    renderSources();
-    return;
-  }
-  const byEmail = new Map(state.queue.map((row) => [queueKey(row), row]));
-  let added = 0;
-  selected.forEach((account) => {
-    const key = queueKey(account);
-    if (byEmail.has(key)) {
-      state.selectedQueue.add(byEmail.get(key).id);
-      return;
-    }
-    const row = {
-      id: `refresh:${account.id}`,
-      source_kind: "local",
-      email: account.email,
-      name: account.email,
-      account_id: account.id,
-      source: account.source,
-      service: sourceLabel(account),
-      status: "idle",
-      error: "",
-      logs: [],
-      auth_file: account.auth_file || null,
-    };
-    byEmail.set(key, row);
-    state.selectedQueue.add(row.id);
-    added += 1;
-  });
-  state.queue = [...byEmail.values()];
-  saveQueue();
-  renderQueue();
-  addLog(`加入刷新队列：${selected.length} 个账号，新增 ${added} 个`, "info");
+  refreshSourceListHelper?.addSelectedToQueue?.();
 }
 
 async function removeSelectedSources() {
-  const selected = selectedSourceAccounts();
-  if (!selected.length) {
-    toast("先选择要从队列移除的邮箱");
-    return;
-  }
-  const emails = [...new Set(selected.map((account) => accountEmailKey(account.email)).filter(Boolean))];
-  if (!emails.length) return;
-  if (!confirm(`从凭证刷新队列移除 ${emails.length} 个邮箱？不会删除邮箱管理里的邮箱资料，也不会从左侧邮箱库移除。`)) return;
-  const emailSet = new Set(emails);
-  selected.forEach((account) => state.selectedAccounts.delete(account.id));
-  const removedRows = state.queue.filter((row) => emailSet.has(accountEmailKey(row.email || row.name)));
-  const removedRowIds = new Set(removedRows.map((row) => row.id));
-  removedRows.forEach((row) => {
-    state.jobs.delete(row.id);
-    state.selectedQueue.delete(row.id);
-  });
-  state.queue = state.queue.filter((row) => !removedRowIds.has(row.id));
-  state.selectedQueue = new Set([...state.selectedQueue].filter((id) => state.queue.some((row) => row.id === id)));
-  saveQueue();
-  renderRefreshStateViews();
-  toast(`已移出队列 ${removedRows.length} 个账号`);
-  addLog(`移出刷新队列：${removedRows.length} 个，邮箱管理资料未删除`, "success");
+  return refreshSourceListHelper?.removeSelectedSources?.();
 }
 
 function rowState(row) {
@@ -1803,6 +1639,15 @@ function rowState(row) {
     logs: row.logs || [],
   };
 }
+
+refreshQueueViewHelper = refreshQueueView?.createRefreshQueueView?.({
+  state,
+  els,
+  rowState,
+  inferErrorCode: (job) => inferErrorCode(job),
+  errorCodeLabel: (code) => errorCodeLabel(code),
+  compactText: (value, max) => compactText(value, max),
+});
 
 function isQueueRowTracked(rowId) {
   return state.queue.some((row) => row.id === rowId);
@@ -1847,6 +1692,7 @@ function rememberJobPollError(row, details, current) {
 }
 
 function loginLabel(status) {
+  if (refreshQueueViewHelper?.loginLabel) return refreshQueueViewHelper.loginLabel(status);
   return {
     idle: "等待",
     queued: "排队",
@@ -1859,6 +1705,7 @@ function loginLabel(status) {
 }
 
 function formatJobError(job) {
+  if (refreshQueueViewHelper?.summarizeJobError) return refreshQueueViewHelper.summarizeJobError(job);
   const code = inferErrorCode(job);
   if (code) return errorCodeLabel(code);
   const detail = compactText(job.error_hint || job.error || "", 90);
@@ -1867,6 +1714,7 @@ function formatJobError(job) {
 }
 
 function displayStatus(job) {
+  if (refreshQueueViewHelper?.displayStatus) return refreshQueueViewHelper.displayStatus(job);
   if (job.status === "failed" && job.error_code === "login_cancelled") {
     return "canceled";
   }
@@ -1877,17 +1725,20 @@ function displayStatus(job) {
 }
 
 function queueFilterStatus(row) {
+  if (refreshQueueViewHelper?.queueFilterStatus) return refreshQueueViewHelper.queueFilterStatus(row);
   const status = rowState(row).status || "idle";
   if (status === "queued") return "idle";
   return status;
 }
 
 function invalidateQueueRowsCache() {
+  if (refreshQueueViewHelper?.invalidateQueueRowsCache) return refreshQueueViewHelper.invalidateQueueRowsCache();
   state.filteredQueueCacheKey = "";
   state.filteredQueueCacheRows = [];
 }
 
 function queueRowsCacheKey() {
+  if (refreshQueueViewHelper?.queueRowsCacheKey) return refreshQueueViewHelper.queueRowsCacheKey();
   return JSON.stringify([
     state.queue.length,
     state.queue[0]?.id || "",
@@ -1898,6 +1749,7 @@ function queueRowsCacheKey() {
 }
 
 function queueRowsForCurrentFilter() {
+  if (refreshQueueViewHelper?.queueRowsForCurrentFilter) return refreshQueueViewHelper.queueRowsForCurrentFilter();
   const cacheKey = queueRowsCacheKey();
   if (cacheKey === state.filteredQueueCacheKey) return state.filteredQueueCacheRows;
   let rows;
@@ -1913,6 +1765,7 @@ function queueRowsForCurrentFilter() {
 }
 
 function renderQueueProgress(counts) {
+  if (refreshQueueViewHelper?.renderQueueProgress) return refreshQueueViewHelper.renderQueueProgress(counts);
   if (!els.queueProgress) return;
   const total = state.queue.length;
   const done = (counts.success || 0) + (counts.failed || 0);
@@ -2054,90 +1907,19 @@ function pruneSelectedQueueToCurrentFilter() {
 }
 
 function openManualCodeDialog(row, kind = "email") {
-  if (!row || !els.manualCodeModal || !els.manualCodeModalInput) return;
-  state.manualCodeTarget = { rowId: row.id, kind };
-  const isPhone = kind === "phone";
-  const label = isPhone ? "手机验证码" : "邮箱验证码";
-  const previous = isPhone
-    ? (row.manual_phone_code || row.phone_code || "")
-    : (row.manual_email_code || "");
-  if (els.manualCodeModalEyebrow) {
-    els.manualCodeModalEyebrow.textContent = isPhone ? "Phone Code" : "Email Code";
-  }
-  if (els.manualCodeModalTitle) {
-    els.manualCodeModalTitle.textContent = `手动输入${label}`;
-  }
-  if (els.manualCodeModalHint) {
-    const target = row.email || row.name || "当前账号";
-    els.manualCodeModalHint.textContent = `${target} 需要${label}时，可以在这里补填后继续任务。`;
-  }
-  els.manualCodeModalInput.value = String(previous || "");
-  els.manualCodeModal.hidden = false;
-  window.requestAnimationFrame(() => {
-    els.manualCodeModalInput.focus();
-    els.manualCodeModalInput.select();
-  });
+  return refreshManualCodeHelper?.openManualCodeDialog?.(row, kind);
 }
 
 function closeManualCodeDialog() {
-  state.manualCodeTarget = null;
-  if (els.manualCodeModal) els.manualCodeModal.hidden = true;
-  if (els.manualCodeModalInput) els.manualCodeModalInput.value = "";
+  refreshManualCodeHelper?.closeManualCodeDialog?.();
 }
 
 function submitManualCodeDialog() {
-  const target = state.manualCodeTarget;
-  const input = els.manualCodeModalInput;
-  if (!target || !input) return;
-  const row = state.queue.find((item) => item.id === target.rowId);
-  if (!row) {
-    closeManualCodeDialog();
-    toast("当前账号已不在队列中");
-    return;
-  }
-  const code = String(input.value || "").trim();
-  if (!/^\d{4,8}$/.test(code)) {
-    toast("请输入 4-8 位验证码");
-    input.focus();
-    input.select();
-    return;
-  }
-  if (target.kind === "phone") {
-    const entry = phoneEntryForRow(row);
-    row.manual_phone_code = code;
-    row.phone_code = code;
-    row.phone_code_checked_at = new Date().toISOString();
-    if (entry) {
-      entry.last_code = code;
-      entry.last_checked_at = row.phone_code_checked_at;
-      entry.status = "found";
-    }
-    savePhonePool();
-    submitManualPhoneCode(row, code).catch((error) => {
-      addLog(`${row.email} 手动手机验证码保存失败`, "warning", {
-        email: row.email,
-        error_code: "manual_phone_code_failed",
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-  } else {
-    row.manual_email_code = code;
-    queueManualEmailCodeSubmit(row);
-  }
-  saveQueue();
-  renderQueue();
-  renderSelectedPhoneCodePanel();
-  closeManualCodeDialog();
-  addLog(`${row.email || row.name || "当前账号"} 已补填${target.kind === "phone" ? "手机" : "邮箱"}验证码`, "success", {
-    step: target.kind === "phone" ? "manual_phone_code" : "manual_email_code",
-    email: row.email,
-  });
+  return refreshManualCodeHelper?.submitManualCodeDialog?.();
 }
 
 function promptCodeForRow(row) {
-  const current = rowState(row);
-  const phoneNeeded = isPhoneVerificationError(current.error_code || row.error_code, `${current.error || ""} ${current.error_hint || ""}`);
-  openManualCodeDialog(row, phoneNeeded ? "phone" : "email");
+  return refreshManualCodeHelper?.promptCodeForRow?.(row);
 }
 
 function currentPhoneMode() {
@@ -2145,7 +1927,7 @@ function currentPhoneMode() {
 }
 
 function phoneCodeForRow(row, entry = null) {
-  return String(row?.manual_phone_code || row?.phone_code || entry?.last_code || "").trim();
+  return refreshPhonePoolHelper?.phoneCodeForRow?.(row, entry) || "";
 }
 
 function normalizePhoneDigits(value) {
@@ -2161,115 +1943,28 @@ function phoneMatches(candidate, wanted) {
 }
 
 function phonePoolPayload() {
-  return state.phonePool.map((item) => ({
-    id: item.id,
-    mode: item.mode,
-    phone: item.phone,
-    api_url: item.api_url,
-    account_email: item.account_email || "",
-  }));
+  return refreshPhonePoolHelper?.phonePoolPayload?.() || [];
 }
 
 function phoneEntryForRow(row) {
-  const key = accountEmailKey(row.email || row.name);
-  if (row.phone_id) {
-    const byId = state.phonePool.find((item) => item.id === row.phone_id);
-    if (byId) return byId;
-  }
-  if (row.phone_number) {
-    const byPhone = state.phonePool.find((item) => phoneMatches(item.phone, row.phone_number));
-    if (byPhone) return byPhone;
-  }
-  if (key) {
-    const bound = state.phonePool.find((item) => accountEmailKey(item.account_email) === key);
-    if (bound) return bound;
-  }
-  return null;
+  return refreshPhonePoolHelper?.phoneEntryForRow?.(row) || null;
 }
 
 function ensurePhoneEntryForRow(row) {
-  const existing = phoneEntryForRow(row);
-  if (existing) return existing;
-  const used = new Set(state.queue.map((item) => item.phone_id).filter(Boolean));
-  const entry = state.phonePool.find((item) => item.mode === "batch" && !accountEmailKey(item.account_email) && !used.has(item.id));
-  if (!entry) return null;
-  row.phone_id = entry.id;
-  row.phone_number = entry.phone;
-  row.phone_api_url = entry.api_url;
-  saveQueue();
-  return entry;
+  return refreshPhonePoolHelper?.ensurePhoneEntryForRow?.(row) || null;
 }
 
 function formatPhoneTime(value) {
-  const parsed = Date.parse(value || "");
-  if (!Number.isFinite(parsed)) return "";
-  return new Date(parsed).toLocaleTimeString("zh-CN", {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+  return refreshPhonePoolHelper?.formatPhoneTime?.(value) || "";
 }
 
 function renderPhoneBindingList() {
-  if (!els.phoneBindingList) return;
-  if (!state.phonePool.length) {
-    els.phoneBindingList.innerHTML = '<div class="phone-pool-empty">还没有手机号绑定关系。</div>';
-    return;
-  }
-  const rows = [...state.phonePool].sort((a, b) => {
-    const aBound = a.account_email ? 0 : 1;
-    const bBound = b.account_email ? 0 : 1;
-    if (aBound !== bBound) return aBound - bBound;
-    return String(a.phone || "").localeCompare(String(b.phone || ""));
-  });
-  els.phoneBindingList.innerHTML = rows.map((item) => {
-    const mode = item.mode === "bound" ? "1对1" : "批量";
-    const email = item.account_email || "未绑定邮箱";
-    const hint = item.last_code
-      ? `最近验证码 ${item.last_code}${item.last_checked_at ? ` · ${formatPhoneTime(item.last_checked_at)}` : ""}`
-      : (item.status === "error" ? "取码失败" : "等待取码");
-    return `
-      <div class="phone-binding-row">
-        <strong>${escapeHtml(item.phone)}</strong>
-        <span>${escapeHtml(email)}</span>
-        <em>${escapeHtml(mode)} · ${escapeHtml(hint)}</em>
-      </div>
-    `;
-  }).join("");
+  refreshPhonePoolHelper?.renderPhoneBindingList?.();
 }
 
 
 function renderPhonePool() {
-  if (!els.phonePoolList) return;
-  if (!state.phonePool.length) {
-    els.phonePoolList.innerHTML = '<div class="phone-pool-empty">还没有长效手机。</div>';
-    renderPhoneBindingList();
-    renderSelectedPhoneCodePanel();
-    return;
-  }
-  els.phonePoolList.innerHTML = state.phonePool.map((item) => {
-    const status = item.last_code
-      ? `最近验证码 ${item.last_code}${item.last_checked_at ? ` · ${formatPhoneTime(item.last_checked_at)}` : ""}`
-      : (item.status === "error" ? "取码失败" : "等待取码");
-    const mode = item.mode === "bound" ? "1对1" : "批量";
-    const bound = item.account_email ? item.account_email : "未绑定账号";
-    return `
-      <div class="phone-pool-row" data-id="${escapeHtml(item.id)}">
-        <div>
-          <strong>${escapeHtml(item.phone)}</strong>
-          <em>${escapeHtml(mode)} · ${escapeHtml(bound)} · ${escapeHtml(status)}</em>
-        </div>
-        <div class="phone-pool-actions">
-          <button class="bind-phone" type="button">绑定选中</button>
-          <button class="poll-phone" type="button">取码</button>
-          <button class="remove-phone danger" type="button">删除</button>
-        </div>
-      </div>
-    `;
-  }).join("");
-  renderPhoneBindingList();
-  renderSelectedPhoneCodePanel();
+  refreshPhonePoolHelper?.renderPhonePool?.();
 }
 
 function renderSelectedPhoneCodePanel() {
@@ -2290,237 +1985,113 @@ function renderSelectedPhoneCodePanel() {
   els.phoneCodeCurrent.textContent = code ? `手机 ${phone} · 验证码：${code}` : `手机 ${phone} · 验证码：-`;
 }
 
+refreshSourceListHelper = refreshSourceList?.createRefreshSourceListHelper?.({
+  state,
+  els,
+  helpers: {
+    escapeHtml,
+    accountEmailKey,
+    sourceRefreshState,
+    sourceTone,
+    sourceLabel,
+    normalizeGenericMode,
+    genericAccountPayload,
+    inferErrorCode,
+    errorCodeLabel,
+    compactText,
+    apiHeaders,
+    readJsonResponse,
+    saveJson,
+    saveQueue,
+    renderQueue,
+    addLog,
+    toast,
+    renderRefreshStateViews,
+    rowState,
+  },
+  actions: {
+    storageKeys: STORAGE_KEYS,
+    mergeSelectedAccountsIntoQueue,
+  },
+});
+
+refreshManualCodeHelper = refreshManualCode?.createRefreshManualCodeHelper?.({
+  state,
+  els,
+  helpers: {
+    rowState,
+    isPhoneVerificationError,
+    phoneEntryForRow,
+    phoneCodeForRow,
+    savePhonePool,
+    saveQueue,
+    renderQueue,
+    renderSelectedPhoneCodePanel,
+    addLog,
+    toast,
+    submitManualPhoneCode,
+    queueManualEmailCodeSubmit,
+    selectedSingleQueueRow,
+  },
+  actions: {},
+});
+
+refreshPhonePoolHelper = refreshPhonePool?.createRefreshPhonePoolHelper?.({
+  state,
+  els,
+  helpers: {
+    escapeHtml,
+    accountEmailKey,
+    savePhonePool,
+    saveQueue,
+    renderQueue,
+    renderSources,
+    renderAll,
+    renderSelectedPhoneCodePanel,
+    toast,
+    addLog,
+    apiHeaders,
+    readJsonResponse,
+    currentPhoneMode,
+    selectedSingleQueueRow,
+    openManualCodeDialog,
+  },
+  actions: {
+    normalizePhoneDigits,
+    phoneMatches,
+  },
+});
+
 function validPhoneApiUrl(value) {
-  try {
-    const url = new URL(String(value || "").trim()
-      .replace(/\{phone\}/g, "10000000000")
-      .replace(/\{email\}/g, "user@example.com")
-      .replace(/\{account\}/g, "user@example.com")
-      .replace(/\{since\}/g, "0")
-      .replace(/\{ts\}/g, String(Date.now())));
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
+  return refreshPhonePoolHelper?.validPhoneApiUrl?.(value) || false;
 }
 
 function addOrUpdatePhoneEntry() {
-  const phone = els.phoneNumber ? els.phoneNumber.value.trim() : "";
-  const apiUrl = els.phoneApiUrl ? els.phoneApiUrl.value.trim() : "";
-  if (!phone || !apiUrl) {
-    toast("请填写手机号和接码 API");
-    return;
-  }
-  if (!validPhoneApiUrl(apiUrl)) {
-    toast("接码 API 必须是 http/https URL");
-    addLog("手机 API 格式错误", "error", { error_code: "phone_pool_api_invalid" });
-    return;
-  }
-  const selected = selectedSingleQueueRow();
-  const isOneToOne = currentPhoneMode() !== "batch";
-  const accountEmail = isOneToOne && selected ? accountEmailKey(selected.email || selected.name) : "";
-  const id = `phone:${phone.toLowerCase()}`;
-  const existing = state.phonePool.find((item) => item.id === id || item.phone === phone);
-  if (accountEmail) {
-    state.phonePool.forEach((item) => {
-      if (item.id !== id && accountEmailKey(item.account_email) === accountEmail) {
-        item.account_email = "";
-      }
-    });
-  }
-  const next = {
-    ...(existing || {}),
-    id,
-    mode: accountEmail ? "bound" : "batch",
-    phone,
-    api_url: apiUrl,
-    account_email: accountEmail || existing?.account_email || "",
-    status: existing?.status || "idle",
-    last_code: existing?.last_code || "",
-    last_message: existing?.last_message || "",
-    last_checked_at: existing?.last_checked_at || "",
-  };
-  if (existing) {
-    Object.assign(existing, next);
-  } else {
-    state.phonePool.push(next);
-  }
-  savePhonePool();
-  renderAll();
-  toast(accountEmail ? "手机号已加入并绑定选中账号" : "手机号已加入手机池");
+  refreshPhonePoolHelper?.addOrUpdatePhoneEntry?.();
 }
 
 function importPhoneBatchEntries() {
-  const text = els.phoneBatchText ? els.phoneBatchText.value.trim() : "";
-  if (!text) {
-    toast("请先粘贴批量手机号");
-    return;
-  }
-  let added = 0;
-  let updated = 0;
-  const errors = [];
-  text.split(/\r?\n/).forEach((line, index) => {
-    const raw = line.trim();
-    if (!raw) return;
-    const parts = raw.split(/----|\t|,/).map((part) => part.trim()).filter(Boolean);
-    const [phone, apiUrl, email = ""] = parts;
-    if (!phone || !apiUrl || !validPhoneApiUrl(apiUrl)) {
-      errors.push(index + 1);
-      return;
-    }
-    const id = `phone:${phone.toLowerCase()}`;
-    const existing = state.phonePool.find((item) => item.id === id || item.phone === phone);
-    const next = {
-      ...(existing || {}),
-      id,
-      mode: email ? "bound" : "batch",
-      phone,
-      api_url: apiUrl,
-      account_email: accountEmailKey(email),
-      status: existing?.status || "idle",
-      last_code: existing?.last_code || "",
-      last_message: existing?.last_message || "",
-      last_checked_at: existing?.last_checked_at || "",
-    };
-    if (existing) {
-      Object.assign(existing, next);
-      updated += 1;
-    } else {
-      state.phonePool.push(next);
-      added += 1;
-    }
-  });
-  savePhonePool();
-  if (els.phoneBatchText && !errors.length) els.phoneBatchText.value = "";
-  renderAll();
-  toast(`手机池导入：新增 ${added}，更新 ${updated}${errors.length ? `，失败 ${errors.length}` : ""}`);
-  if (errors.length) addLog(`手机池批量导入有 ${errors.length} 行格式错误`, "warning", { error_code: "phone_pool_api_invalid" });
+  refreshPhonePoolHelper?.importPhoneBatchEntries?.();
 }
 
 function bindPhoneToSelected(phoneId) {
-  const item = state.phonePool.find((entry) => entry.id === phoneId);
-  const row = selectedSingleQueueRow();
-  if (!item) return;
-  if (!row) {
-    toast("请只勾选一个队列账号再绑定");
-    return;
-  }
-  const accountEmail = accountEmailKey(row.email || row.name);
-  state.phonePool.forEach((entry) => {
-    if (entry.id !== phoneId && accountEmailKey(entry.account_email) === accountEmail) {
-      entry.account_email = "";
-    }
-  });
-  item.mode = "bound";
-  item.account_email = accountEmail;
-  row.phone_id = item.id;
-  row.phone_number = item.phone;
-  row.phone_api_url = item.api_url;
-  savePhonePool();
-  saveQueue();
-  renderAll();
-  addLog(`${row.email} 已绑定长效手机`, "success", { step: "phone_pool", email: row.email });
+  refreshPhonePoolHelper?.bindPhoneToSelected?.(phoneId);
 }
 
 function removePhoneEntry(phoneId) {
-  const item = state.phonePool.find((entry) => entry.id === phoneId);
-  if (!item) return;
-  if (!confirm(`删除长效手机 ${item.phone}？不会删除账号，只会解除绑定。`)) return;
-  state.phonePool = state.phonePool.filter((entry) => entry.id !== phoneId);
-  state.queue.forEach((row) => {
-    if (row.phone_id === phoneId || String(row.phone_number || "") === item.phone) {
-      delete row.phone_id;
-      delete row.phone_number;
-      delete row.phone_api_url;
-    }
-  });
-  savePhonePool();
-  saveQueue();
-  renderSources();
-  renderQueue();
-  renderSelectedPhoneCodePanel();
+  refreshPhonePoolHelper?.removePhoneEntry?.(phoneId);
 }
 
 async function pollPhoneEntry(phoneId, rowId = "") {
-  const item = state.phonePool.find((entry) => entry.id === phoneId);
-  if (!item) return;
-  const targetRow = state.queue.find((row) => row.id === rowId) || state.queue.find((row) => {
-    return row.phone_id === item.id
-      || phoneMatches(item.phone, row.phone_number)
-      || accountEmailKey(row.email || row.name) === accountEmailKey(item.account_email);
-  });
-  item.status = "running";
-  savePhonePool();
-  renderPhonePool();
-  try {
-    const response = await fetch("/client-api/phone-code/poll", {
-      method: "POST",
-      headers: apiHeaders(),
-      body: JSON.stringify({
-        phone: item.phone,
-        api_url: item.api_url,
-        account_email: targetRow?.email || item.account_email,
-        since: item.last_checked_at || "",
-      }),
-    });
-    const data = await readJsonResponse(response, "手机取码失败");
-    item.last_checked_at = data.checked_at || new Date().toISOString();
-    item.last_message = data.message || "";
-    item.status = data.found ? "found" : "idle";
-    if (data.code) item.last_code = String(data.code);
-    if (targetRow) {
-      targetRow.phone_id = item.id;
-      targetRow.phone_number = item.phone;
-      targetRow.phone_api_url = item.api_url;
-      targetRow.phone_code = data.code ? String(data.code) : targetRow.phone_code || "";
-      targetRow.phone_code_message = data.message || "";
-      targetRow.phone_code_checked_at = data.checked_at || new Date().toISOString();
-      if (!item.account_email && currentPhoneMode() !== "batch") item.account_email = accountEmailKey(targetRow.email || targetRow.name);
-    }
-    savePhonePool();
-    saveQueue();
-    renderPhonePool();
-    renderQueue();
-    if (data.found) {
-      addLog(`${item.account_email || item.phone} 手机验证码：${data.code}`, "success", { step: "phone_code", email: item.account_email });
-      toast(`收到手机验证码 ${data.code}`);
-    } else {
-      addLog(`${item.account_email || item.phone} 暂未收到手机验证码`, "warning", { error_code: "phone_code_missing", email: item.account_email });
-      toast("暂未收到手机验证码");
-    }
-  } catch (error) {
-    const details = error.details || { error: error.message || "手机取码失败", error_code: "phone_code_fetch_failed" };
-    item.status = "error";
-    item.last_message = details.error || "手机取码失败";
-    item.last_checked_at = new Date().toISOString();
-    savePhonePool();
-    renderPhonePool();
-    addLog(formatJobError(details), "error", { error_code: details.error_code || "phone_code_fetch_failed", email: item.account_email });
-  }
+  return refreshPhonePoolHelper?.pollPhoneEntry?.(phoneId, rowId);
 }
 
 function saveManualPhoneCodeForSelected() {
-  const row = selectedSingleQueueRow();
-  if (!row) {
-    toast("请先只选中一个队列账号");
-    return;
-  }
-  openManualCodeDialog(row, "phone");
+  refreshPhonePoolHelper?.saveManualPhoneCodeForSelected?.();
 }
 
 async function pollSelectedPhoneCode() {
-  const row = selectedSingleQueueRow();
-  if (!row) {
-    toast("请先只选中一个队列账号");
-    return;
-  }
-  const entry = ensurePhoneEntryForRow(row);
-  if (!entry) {
-    toast("没有可用手机。请先添加 1 对 1 手机或批量池手机号");
-    addLog(`${row.email} 没有可用手机`, "warning", { error_code: "phone_pool_empty", email: row.email });
-    return;
-  }
-  await pollPhoneEntry(entry.id, row.id);
+  return refreshPhonePoolHelper?.pollSelectedPhoneCode?.();
 }
 
 function failedRowsForCleanup() {

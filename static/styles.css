@@ -679,6 +679,17 @@ button:disabled {
   align-items: center;
 }
 
+#enqueueSelectedRefreshBtn {
+  border-color: rgba(47, 117, 255, 0.18);
+  background: rgba(47, 117, 255, 0.08);
+  color: #315a9d;
+}
+
+#enqueueSelectedRefreshBtn:disabled {
+  background: rgba(255, 255, 255, 0.52);
+  color: rgba(96, 112, 138, 0.58);
+}
+
 .mailbox-tools input,
 .mailbox-tools select,
 .mailbox-tools button {
@@ -2357,11 +2368,29 @@ body.mailbox-controls-collapsed .mailbox-panel {
 .pager-tools {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   flex: 1 1 auto;
   min-width: 0;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
+}
+
+.pager-filters,
+.pager-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+}
+
+.pager-filters {
+  flex: 1 1 auto;
+}
+
+.pager-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  white-space: nowrap;
 }
 
 .mail-list-panel .section-head {
@@ -2379,10 +2408,21 @@ body.mailbox-controls-collapsed .mailbox-panel {
   flex: 1 1 220px;
 }
 
+.pager-filters select:first-child {
+  flex: 1 1 132px;
+}
+
+.pager-filters select:last-child {
+  flex: 0 0 84px;
+}
+
 .pager-tools .ghost.danger {
   width: auto;
   min-width: 56px;
+  max-width: 100%;
+  flex: 0 1 auto;
   padding: 0 8px;
+  white-space: nowrap;
 }
 
 .detail-actions {
@@ -3367,8 +3407,20 @@ body.modal-open {
 .mailbox-manager-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 7px;
   min-width: 0;
+}
+
+#enqueueSelectedMailboxes {
+  border-color: rgba(47, 117, 255, 0.18);
+  background: rgba(47, 117, 255, 0.08);
+  color: #315a9d;
+}
+
+#enqueueSelectedMailboxes:disabled {
+  background: rgba(255, 255, 255, 0.52);
+  color: rgba(96, 112, 138, 0.58);
 }
 
 .mailbox-select-all {
@@ -4299,6 +4351,17 @@ body.modal-open {
 
   .mailbox-pager,
   .pager-tools {
+    flex-wrap: wrap;
+  }
+
+  .pager-tools {
+    justify-content: flex-end;
+  }
+
+  .pager-filters,
+  .pager-actions {
+    flex: 1 1 100%;
+    justify-content: flex-end;
     flex-wrap: wrap;
   }
 
