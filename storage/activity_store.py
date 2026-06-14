@@ -8,8 +8,12 @@ from typing import Any
 from storage.activity_sqlite_store import (
     append_login_history_entry as sqlite_append_login_history_entry,
     append_refresh_result_entry as sqlite_append_refresh_result_entry,
+    has_login_history_rows as sqlite_has_login_history_rows,
+    has_refresh_results_rows as sqlite_has_refresh_results_rows,
     load_login_history as sqlite_load_login_history,
     load_refresh_results as sqlite_load_refresh_results,
+    query_login_history as sqlite_query_login_history,
+    query_refresh_results as sqlite_query_refresh_results,
     save_login_history_snapshot as sqlite_save_login_history_snapshot,
     save_refresh_results_snapshot as sqlite_save_refresh_results_snapshot,
 )
@@ -51,7 +55,7 @@ def _save_rows(path: Path, list_key: str, rows: list[dict[str, Any]], *, limit: 
 
 def load_refresh_results(path: Path) -> list[dict[str, Any]]:
     rows = sqlite_load_refresh_results(path)
-    if rows:
+    if rows or sqlite_has_refresh_results_rows(path):
         return rows
     rows = _load_rows(path, "results")
     if rows:
@@ -90,7 +94,7 @@ def append_refresh_result(
 
 def load_login_history(path: Path) -> list[dict[str, Any]]:
     rows = sqlite_load_login_history(path)
-    if rows:
+    if rows or sqlite_has_login_history_rows(path):
         return rows
     rows = _load_rows(path, "history")
     if rows:
@@ -122,3 +126,75 @@ def append_login_history_entry(path: Path, job: dict[str, Any], *, limit: int) -
     history.append(entry)
     save_login_history(path, history, limit=limit)
     sqlite_append_login_history_entry(path, entry, limit=limit)
+
+
+def query_refresh_results(
+    path: Path,
+    *,
+    limit: int | None = None,
+    email: str = "",
+    job_id: str = "",
+) -> list[dict[str, Any]]:
+    rows = sqlite_query_refresh_results(path, limit=limit, email=email, job_id=job_id)
+    if rows or sqlite_has_refresh_results_rows(path):
+        return rows
+    legacy_rows = _load_rows(path, "results")
+    if legacy_rows:
+        sqlite_save_refresh_results_snapshot(path, legacy_rows, limit=max(len(legacy_rows), 1))
+        rows = sqlite_query_refresh_results(path, limit=limit, email=email, job_id=job_id)
+        if rows or sqlite_has_refresh_results_rows(path):
+            return rows
+    email_value = str(email or "").strip().lower()
+    job_value = str(job_id or "").strip()
+    rows = legacy_rows
+    if email_value:
+        rows = [row for row in rows if str(row.get("email") or "").strip().lower() == email_value]
+    if job_value:
+        rows = [row for row in rows if str(row.get("job_id") or "").strip() == job_value]
+    if isinstance(limit, int) and limit > 0:
+        return rows[:limit]
+    return rows
+
+
+def query_login_history(
+    path: Path,
+    *,
+    limit: int | None = None,
+    job_id: str = "",
+    finished_since: str = "",
+    started_since: str = "",
+) -> list[dict[str, Any]]:
+    rows = sqlite_query_login_history(
+        path,
+        limit=limit,
+        job_id=job_id,
+        finished_since=finished_since,
+        started_since=started_since,
+    )
+    if rows or sqlite_has_login_history_rows(path):
+        return rows
+    legacy_rows = _load_rows(path, "history")
+    if legacy_rows:
+        sqlite_save_login_history_snapshot(path, legacy_rows, limit=max(len(legacy_rows), 1))
+        rows = sqlite_query_login_history(
+            path,
+            limit=limit,
+            job_id=job_id,
+            finished_since=finished_since,
+            started_since=started_since,
+        )
+        if rows or sqlite_has_login_history_rows(path):
+            return rows
+    rows = legacy_rows
+    job_value = str(job_id or "").strip()
+    finished_value = str(finished_since or "").strip()
+    started_value = str(started_since or "").strip()
+    if job_value:
+        rows = [row for row in rows if str(row.get("job_id") or "").strip() == job_value]
+    if finished_value:
+        rows = [row for row in rows if str(row.get("finished_at") or "").strip() >= finished_value]
+    if started_value:
+        rows = [row for row in rows if str(row.get("started_at") or "").strip() >= started_value]
+    if isinstance(limit, int) and limit > 0:
+        return rows[:limit]
+    return rows

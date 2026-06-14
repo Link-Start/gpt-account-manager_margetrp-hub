@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable
+
+from storage.activity_store import query_login_history, query_refresh_results
 
 
 def count_by_value(rows: list[Any], getter: Callable[[Any], str]) -> dict[str, int]:
@@ -269,5 +272,38 @@ def dashboard_stats_response(
             "domains": sorted_count_rows(banned_domains, "domain", limit=20),
             "recipients": sorted_count_rows(banned_recipients, "recipient", limit=50),
             "messages": banned_messages[:limit],
+        },
+    }
+
+
+def dashboard_stats_response_for_activity_paths(
+    workspace_id: str,
+    *,
+    refresh_results_path: Path | None = None,
+    login_history_path: Path | None = None,
+    load_workspace_refresh_results: Callable[[str], list[dict[str, Any]]],
+    load_workspace_login_history: Callable[[str], list[dict[str, Any]]] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    refresh_loader = load_workspace_refresh_results
+    if isinstance(refresh_results_path, Path):
+        refresh_loader = lambda _workspace_id: query_refresh_results(refresh_results_path)
+
+    login_loader = load_workspace_login_history
+    if isinstance(login_history_path, Path):
+        login_loader = lambda _workspace_id: query_login_history(login_history_path)
+    elif login_loader is None:
+        login_loader = lambda _workspace_id: []
+
+    response = dashboard_stats_response(
+        workspace_id,
+        load_workspace_refresh_results=refresh_loader,
+        **kwargs,
+    )
+    login_history = login_loader(workspace_id)
+    return {
+        **response,
+        "activity": {
+            "login_history_total": len(login_history),
         },
     }

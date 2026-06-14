@@ -74,6 +74,34 @@ class ActivityStoreTests(unittest.TestCase):
         self.assertEqual(rows[0]["job_id"], "job-a2")
         self.assertEqual(self.fetch_count(db_path, "refresh_results"), 1)
 
+    def test_query_refresh_results_uses_sqlite_filters_and_limit(self):
+        json_path = self.root / "refresh_results.json"
+
+        activity_store.save_refresh_results(
+            json_path,
+            [
+                {"email": "a@example.com", "job_id": "job-a", "refreshed_at": "2026-06-14T10:00:00+00:00"},
+                {"email": "b@example.com", "job_id": "job-b", "refreshed_at": "2026-06-14T11:00:00+00:00"},
+            ],
+            limit=100,
+        )
+
+        rows = activity_store.query_refresh_results(json_path, email="b@example.com", limit=1)
+
+        self.assertEqual(rows, [{"email": "b@example.com", "job_id": "job-b", "refreshed_at": "2026-06-14T11:00:00+00:00"}])
+
+    def test_query_refresh_results_falls_back_to_json(self):
+        json_path = self.root / "refresh_results.json"
+        json_path.write_text(
+            '{"updated_at":"2026-06-14T10:00:00+00:00","results":[{"email":"legacy@example.com","job_id":"job-legacy","refreshed_at":"2026-06-14T09:00:00+00:00"}]}',
+            encoding="utf-8",
+        )
+
+        rows = activity_store.query_refresh_results(json_path, job_id="job-legacy")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["email"], "legacy@example.com")
+
     def test_save_login_history_creates_sqlite_sidecar(self):
         json_path = self.root / "login_history.json"
 
@@ -120,6 +148,38 @@ class ActivityStoreTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["status"], "success")
         self.assertEqual(self.fetch_count(db_path, "login_history"), 1)
+
+    def test_query_login_history_uses_sqlite_filters_and_limit(self):
+        json_path = self.root / "login_history.json"
+
+        activity_store.save_login_history(
+            json_path,
+            [
+                {"job_id": "job-a", "status": "failed", "finished_at": "2026-06-14T10:00:00+00:00", "started_at": "2026-06-14T09:58:00+00:00"},
+                {"job_id": "job-b", "status": "success", "finished_at": "2026-06-14T11:00:00+00:00", "started_at": "2026-06-14T10:58:00+00:00"},
+            ],
+            limit=100,
+        )
+
+        rows = activity_store.query_login_history(
+            json_path,
+            started_since="2026-06-14T10:30:00+00:00",
+            limit=1,
+        )
+
+        self.assertEqual(rows, [{"job_id": "job-b", "status": "success", "finished_at": "2026-06-14T11:00:00+00:00", "started_at": "2026-06-14T10:58:00+00:00"}])
+
+    def test_query_login_history_falls_back_to_json(self):
+        json_path = self.root / "login_history.json"
+        json_path.write_text(
+            '{"updated_at":"2026-06-14T10:00:00+00:00","history":[{"job_id":"job-legacy","status":"success","finished_at":"2026-06-14T09:00:00+00:00"}]}',
+            encoding="utf-8",
+        )
+
+        rows = activity_store.query_login_history(json_path, job_id="job-legacy")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "success")
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ from typing import Any
 
 
 _DB_LOCK = threading.RLock()
+_TABLE_NAMES = {"refresh_results", "login_history"}
 
 
 def _iso_now() -> str:
@@ -50,6 +51,66 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             ON login_history(finished_at DESC, started_at DESC);
         """
     )
+
+
+def _table_has_rows(path: Path, table: str) -> bool:
+    if table not in _TABLE_NAMES:
+        raise ValueError(f"unsupported activity table: {table}")
+    db_path = sqlite_path_for_json(path)
+    if not db_path.exists():
+        return False
+    with _DB_LOCK:
+        conn = _connect(db_path)
+        try:
+            _ensure_schema(conn)
+            row = conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
+
+def _decode_payload_rows(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(str(row["payload_json"] or ""))
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            result.append(payload)
+    return result
+
+
+def _query_payload_rows(
+    path: Path,
+    *,
+    table: str,
+    order_by: str,
+    where_sql: str = "",
+    params: tuple[Any, ...] = (),
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    if table not in _TABLE_NAMES:
+        raise ValueError(f"unsupported activity table: {table}")
+    db_path = sqlite_path_for_json(path)
+    if not db_path.exists():
+        return []
+    sql = f"SELECT payload_json FROM {table}"
+    if where_sql:
+        sql += f" WHERE {where_sql}"
+    sql += f" ORDER BY {order_by}"
+    query_params: list[Any] = list(params)
+    if isinstance(limit, int) and limit > 0:
+        sql += " LIMIT ?"
+        query_params.append(limit)
+    with _DB_LOCK:
+        conn = _connect(db_path)
+        try:
+            _ensure_schema(conn)
+            rows = conn.execute(sql, tuple(query_params)).fetchall()
+            return _decode_payload_rows(rows)
+        finally:
+            conn.close()
 
 
 def _refresh_dedupe_key(row: dict[str, Any]) -> str:
@@ -201,57 +262,76 @@ def append_login_history_entry(path: Path, row: dict[str, Any], *, limit: int) -
             conn.close()
 
 
+def has_refresh_results_rows(path: Path) -> bool:
+    return _table_has_rows(path, "refresh_results")
+
+
+def has_login_history_rows(path: Path) -> bool:
+    return _table_has_rows(path, "login_history")
+
+
+def query_refresh_results(
+    path: Path,
+    *,
+    limit: int | None = None,
+    email: str = "",
+    job_id: str = "",
+) -> list[dict[str, Any]]:
+    filters: list[str] = []
+    params: list[Any] = []
+    email_value = str(email or "").strip().lower()
+    if email_value:
+        filters.append("LOWER(email) = ?")
+        params.append(email_value)
+    job_value = str(job_id or "").strip()
+    if job_value:
+        filters.append("job_id = ?")
+        params.append(job_value)
+    return _query_payload_rows(
+        path,
+        table="refresh_results",
+        order_by="refreshed_at DESC, rowid DESC",
+        where_sql=" AND ".join(filters),
+        params=tuple(params),
+        limit=limit,
+    )
+
+
+def query_login_history(
+    path: Path,
+    *,
+    limit: int | None = None,
+    job_id: str = "",
+    finished_since: str = "",
+    started_since: str = "",
+) -> list[dict[str, Any]]:
+    filters: list[str] = []
+    params: list[Any] = []
+    job_value = str(job_id or "").strip()
+    if job_value:
+        filters.append("job_id = ?")
+        params.append(job_value)
+    finished_value = str(finished_since or "").strip()
+    if finished_value:
+        filters.append("finished_at >= ?")
+        params.append(finished_value)
+    started_value = str(started_since or "").strip()
+    if started_value:
+        filters.append("started_at >= ?")
+        params.append(started_value)
+    return _query_payload_rows(
+        path,
+        table="login_history",
+        order_by="finished_at DESC, started_at DESC, rowid DESC",
+        where_sql=" AND ".join(filters),
+        params=tuple(params),
+        limit=limit,
+    )
+
+
 def load_refresh_results(path: Path) -> list[dict[str, Any]]:
-    db_path = sqlite_path_for_json(path)
-    if not db_path.exists():
-        return []
-    with _DB_LOCK:
-        conn = _connect(db_path)
-        try:
-            _ensure_schema(conn)
-            rows = conn.execute(
-                """
-                SELECT payload_json
-                FROM refresh_results
-                ORDER BY refreshed_at DESC, rowid DESC
-                """
-            ).fetchall()
-            result: list[dict[str, Any]] = []
-            for row in rows:
-                try:
-                    payload = json.loads(str(row["payload_json"] or ""))
-                except (TypeError, json.JSONDecodeError):
-                    continue
-                if isinstance(payload, dict):
-                    result.append(payload)
-            return result
-        finally:
-            conn.close()
+    return query_refresh_results(path)
 
 
 def load_login_history(path: Path) -> list[dict[str, Any]]:
-    db_path = sqlite_path_for_json(path)
-    if not db_path.exists():
-        return []
-    with _DB_LOCK:
-        conn = _connect(db_path)
-        try:
-            _ensure_schema(conn)
-            rows = conn.execute(
-                """
-                SELECT payload_json
-                FROM login_history
-                ORDER BY finished_at DESC, started_at DESC, rowid DESC
-                """
-            ).fetchall()
-            result: list[dict[str, Any]] = []
-            for row in rows:
-                try:
-                    payload = json.loads(str(row["payload_json"] or ""))
-                except (TypeError, json.JSONDecodeError):
-                    continue
-                if isinstance(payload, dict):
-                    result.append(payload)
-            return result
-        finally:
-            conn.close()
+    return query_login_history(path)
