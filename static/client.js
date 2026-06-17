@@ -911,9 +911,9 @@ function saveAbnormalRows() {
 function saveCpaSettings() {
   if (!els.cpaBaseUrl || !els.cpaKey || !els.cpaLimit) return;
   saveJson(STORAGE_KEYS.cpaSettings, {
-    base_url: els.cpaBaseUrl.value.trim(),
-    management_key: els.cpaKey.value,
-    max_items: els.cpaLimit.value,
+    base_url: els.cpaBaseUrl?.value.trim() || "",
+    management_key: els.cpaKey?.value || "",
+    max_items: els.cpaLimit?.value || "50",
   });
 }
 
@@ -2056,11 +2056,13 @@ function loginPayload(row) {
   const account = accountForRow(row) || row;
   const email = account.email || row.email;
   const sameEmail = state.accounts.filter((item) => item.email.toLowerCase() === String(email).toLowerCase());
-  const shouldUploadToCpa = row.source_kind === "cpa" && els.cpaBaseUrl.value.trim() && els.cpaKey.value.trim();
+  const shouldUploadToCpa = row.source_kind === "cpa"
+    && els.cpaBaseUrl?.value.trim()
+    && els.cpaKey?.value.trim();
   return {
     login_only: !shouldUploadToCpa,
-    base_url: shouldUploadToCpa ? els.cpaBaseUrl.value.trim() : "",
-    management_key: shouldUploadToCpa ? els.cpaKey.value : "",
+    base_url: shouldUploadToCpa ? els.cpaBaseUrl?.value.trim() || "" : "",
+    management_key: shouldUploadToCpa ? els.cpaKey?.value || "" : "",
     name: row.cpa_name || row.name || email,
     email,
     password: account.password || "",
@@ -2168,8 +2170,8 @@ function rowToRefreshQueueItem(row) {
     cpa_name: row.cpa_name || "",
     auth_index: row.auth_index || "",
     account_id: account?.id || row.account_id || "",
-    cpa_base_url: row.source_kind === "cpa" ? els.cpaBaseUrl.value.trim() : "",
-    cpa_management_key: row.source_kind === "cpa" ? els.cpaKey.value : "",
+    cpa_base_url: row.source_kind === "cpa" ? (els.cpaBaseUrl?.value.trim() || "") : "",
+    cpa_management_key: row.source_kind === "cpa" ? (els.cpaKey?.value || "") : "",
     status: "idle",
     error: "",
     logs: [],
@@ -2360,8 +2362,8 @@ async function scanSelectedMailboxes() {
 
 async function scanCpaAbnormal() {
   if (!els.cpaBaseUrl || !els.cpaKey || !els.cpaLimit || !els.scanCpaBtn) return;
-  const baseUrl = els.cpaBaseUrl.value.trim();
-  const managementKey = els.cpaKey.value.trim();
+  const baseUrl = els.cpaBaseUrl?.value.trim() || "";
+  const managementKey = els.cpaKey?.value.trim() || "";
   if (!baseUrl || !managementKey) {
     toast("先填写 CPA 地址和管理密钥");
     return;
@@ -2376,7 +2378,7 @@ async function scanCpaAbnormal() {
       body: JSON.stringify({
         base_url: baseUrl,
         management_key: managementKey,
-        max_items: Number(els.cpaLimit.value || 50),
+        max_items: Number(els.cpaLimit?.value || 50),
       }),
     });
     const data = await readJsonResponse(response, "/client-api/cpa/scan-401");
