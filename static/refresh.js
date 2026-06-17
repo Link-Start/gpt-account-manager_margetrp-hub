@@ -105,6 +105,15 @@ function migrateLegacyStorageKeys(names) {
 migrateLegacyStorageKeys(["accounts", "categories", "refreshQueue", "refreshSettings", "phonePool"]);
 repairLocalStorageKeys(Object.values(STORAGE_KEYS));
 
+let refreshErrorsHelper = null;
+let refreshQueueViewHelper = null;
+let refreshSourceListHelper = null;
+let refreshManualCodeHelper = null;
+let refreshPhonePoolHelper = null;
+let mailboxImportHelper = null;
+let mailboxImportUiHelper = null;
+let refreshQueueHelper = null;
+
 const storedRefreshQueue = loadJson(STORAGE_KEYS.refreshQueue, []);
 const normalizedRefreshQueue = normalizeQueue(storedRefreshQueue);
 if (JSON.stringify(storedRefreshQueue) !== JSON.stringify(normalizedRefreshQueue)) {
@@ -139,14 +148,6 @@ const state = {
   jobPollErrors: new Map(),
 };
 const pendingSaveTimers = new Map();
-let refreshErrorsHelper = null;
-let refreshQueueViewHelper = null;
-let refreshSourceListHelper = null;
-let refreshManualCodeHelper = null;
-let refreshPhonePoolHelper = null;
-let mailboxImportHelper = null;
-let mailboxImportUiHelper = null;
-let refreshQueueHelper = null;
 const saveScheduler = base?.createPendingSaveScheduler?.((key, value) => saveJson(key, value)) || null;
 
 const MAX_LOGIN_ATTEMPTS = 3;

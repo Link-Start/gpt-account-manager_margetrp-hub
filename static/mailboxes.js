@@ -136,6 +136,13 @@ function migrateLegacyStorageKeys(names) {
 
 migrateLegacyStorageKeys(["accounts", "categories"]);
 
+const mailboxAccountModel = window.GAM?.mailboxAccountModel?.createMailboxAccountModel?.({
+  defaultTempWorkerUrl: "",
+  importDateCategoryPattern: IMPORT_DATE_CATEGORY_PATTERN,
+  reservedCategoryNames: [...RESERVED_CATEGORY_NAMES],
+  legacyCategoryNames: [...LEGACY_CATEGORY_NAMES],
+  serviceLabels: SERVICE_LABELS,
+});
 const state = {
   accounts: normalizeStoredAccounts(loadJson(STORAGE_KEYS.accounts, [])),
   categories: normalizeStoredCategories(loadJson(STORAGE_KEYS.categories, [])),
@@ -149,13 +156,6 @@ const state = {
 const pendingSaveTimers = new Map();
 const saveScheduler = base?.createPendingSaveScheduler?.((key, value) => saveJson(key, value)) || null;
 const REFRESH_QUEUE_STORAGE_KEY = `ctgptm.mail.refreshQueue:${workspaceId}`;
-const mailboxAccountModel = window.GAM?.mailboxAccountModel?.createMailboxAccountModel?.({
-  defaultTempWorkerUrl: "",
-  importDateCategoryPattern: IMPORT_DATE_CATEGORY_PATTERN,
-  reservedCategoryNames: [...RESERVED_CATEGORY_NAMES],
-  legacyCategoryNames: [...LEGACY_CATEGORY_NAMES],
-  serviceLabels: SERVICE_LABELS,
-});
 const mailboxImportHelper = window.GAM?.mailboxImport?.createMailboxImportHelper?.({
   serviceMap: {
     auto: { source: "auto", label: "自动识别" },
