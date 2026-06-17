@@ -464,8 +464,8 @@ def workspace_message_row_key(row: dict[str, Any]) -> str:
 
 
 def usage_summary() -> dict[str, Any]:
-    now = datetime.datetime.now(datetime.UTC)
-    active_cutoff = now - datetime.timedelta(hours=24)
+    now = datetime.now(timezone.utc)
+    active_cutoff = now - timedelta(hours=24)
     workspaces_total = 0
     workspaces_active = 0
     latest_active_at = ""
@@ -481,7 +481,7 @@ def usage_summary() -> dict[str, Any]:
                     latest_ts = max(latest_ts, target.stat().st_mtime)
             if latest_ts <= 0:
                 continue
-            latest_dt = datetime.datetime.fromtimestamp(latest_ts, datetime.UTC)
+            latest_dt = datetime.fromtimestamp(latest_ts, timezone.utc)
             latest_iso = latest_dt.isoformat().replace("+00:00", "Z")
             if latest_iso > latest_active_at:
                 latest_active_at = latest_iso
