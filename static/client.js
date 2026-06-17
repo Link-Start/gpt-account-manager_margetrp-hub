@@ -2519,6 +2519,7 @@ function rowPlanBucket(row) {
 }
 
 function renderLoginTable() {
+  if (!els.loginTableBody) return;
   const rows = state.abnormalRows;
   const counts = { idle: 0, queued: 0, running: 0, success: 0, failed: 0 };
   const planCounts = { FREE: 0, PLUS: 0, TEAM: 0, PROX5: 0, PROX20: 0 };
@@ -2528,11 +2529,11 @@ function renderLoginTable() {
     const plan = rowPlanBucket(row);
     if (planCounts[plan] !== undefined) planCounts[plan] += 1;
   });
-  els.loginTotal.textContent = String(rows.length);
-  els.loginIdle.textContent = String(counts.idle || 0);
-  els.loginRunning.textContent = String((counts.queued || 0) + (counts.running || 0));
-  els.loginSuccess.textContent = String(counts.success || 0);
-  els.loginFailed.textContent = String(counts.failed || 0);
+  if (els.loginTotal) els.loginTotal.textContent = String(rows.length);
+  if (els.loginIdle) els.loginIdle.textContent = String(counts.idle || 0);
+  if (els.loginRunning) els.loginRunning.textContent = String((counts.queued || 0) + (counts.running || 0));
+  if (els.loginSuccess) els.loginSuccess.textContent = String(counts.success || 0);
+  if (els.loginFailed) els.loginFailed.textContent = String(counts.failed || 0);
   if (els.loginPlanTypes) {
     els.loginPlanTypes.textContent = `FREE ${planCounts.FREE} · PLUS ${planCounts.PLUS} · TEAM ${planCounts.TEAM} · PROX5 ${planCounts.PROX5} · PROX20 ${planCounts.PROX20}`;
   }
@@ -2582,7 +2583,6 @@ function startLoginForRows(rows) {
     toast("没有可加入队列的异常账号");
     return;
   }
-  setActiveView("login");
   const runnable = rows.filter(isRowRefreshable);
   const skipped = rows.length - runnable.length;
   if (skipped) addClientLog(`已跳过 ${skipped} 个无需或不应刷新的账号`, "warning");
@@ -3262,7 +3262,7 @@ function renderAll({ includeMessages = true } = {}) {
   renderCategories();
   renderAccounts();
   if (includeMessages) renderMessages();
-  renderLoginTable();
+  if (els.loginTableBody) renderLoginTable();
 }
 
 function groupAccountsByImportDate() {
@@ -3417,14 +3417,14 @@ els.enqueueSelectedRefreshBtn?.addEventListener("click", enqueueSelectedMailboxR
 els.clearClientLogsBtn.addEventListener("click", () => {
   els.clientLogList.innerHTML = '<div class="client-log-item">等待操作。</div>';
 });
-els.loginTableBody.addEventListener("click", (event) => {
+els.loginTableBody?.addEventListener("click", (event) => {
   const button = event.target.closest(".login-one");
   if (!button) return;
   const row = button.closest("tr");
   const item = state.abnormalRows.find((candidate) => candidate.id === row?.dataset.id);
   if (item) startLoginForRows([item]);
 });
-els.loginTableBody.addEventListener("change", (event) => {
+els.loginTableBody?.addEventListener("change", (event) => {
   const input = event.target.closest(".abnormal-check");
   if (!input) return;
   const row = input.closest("tr");
@@ -3452,7 +3452,7 @@ els.nextPage.addEventListener("click", () => {
     pruneSelectedMailboxesToCurrentFilter();
     renderCategories();
     renderAccounts();
-    renderLoginTable();
+    if (els.loginTableBody) renderLoginTable();
   };
   const debouncedRerenderMailboxes = scheduler?.debounce?.(rerenderMailboxes, 180) || rerenderMailboxes;
   input.addEventListener("input", debouncedRerenderMailboxes);
