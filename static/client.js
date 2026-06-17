@@ -1,13 +1,11 @@
 const WORKSPACE_ID_STORAGE_KEY = "ctgptm.workspaceId";
 const DEFAULT_WORKSPACE_ID = "ws_33851931ac0e448da66758fa28a05825";
-const FORCE_PRIMARY_WORKSPACE_PARAM = "force_workspace";
 
 function bootstrapWorkspaceId() {
-  const query = new URLSearchParams(window.location.search);
-  const forcedWorkspace = String(query.get(FORCE_PRIMARY_WORKSPACE_PARAM) || "").trim();
-  if (/^[A-Za-z0-9][A-Za-z0-9_.-]{5,63}$/.test(forcedWorkspace)) {
-    localStorage.setItem(WORKSPACE_ID_STORAGE_KEY, forcedWorkspace);
-    return forcedWorkspace;
+  if (window.GAM?.base?.resolveWorkspaceId) {
+    return window.GAM.base.resolveWorkspaceId(WORKSPACE_ID_STORAGE_KEY, {
+      fallbackWorkspaceId: DEFAULT_WORKSPACE_ID,
+    });
   }
   const existing = window.GAM?.base?.getWorkspaceId?.(WORKSPACE_ID_STORAGE_KEY)
     || localStorage.getItem(WORKSPACE_ID_STORAGE_KEY)
@@ -545,8 +543,7 @@ function hasAdminToken() {
 async function loadUsageBadge() {
   if (!els.usageCount) return;
   try {
-    const response = await fetch(`/health${hasAdminToken() ? `?token=${encodeURIComponent(rememberedAdminToken())}` : ""}`, {
-      headers: hasAdminToken() ? {} : undefined,
+    const response = await fetch("/client-api/public-stats", {
       cache: "no-store",
     });
     const data = await readJsonResponse(response, "读取使用人数失败");

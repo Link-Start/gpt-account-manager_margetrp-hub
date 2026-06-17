@@ -27,6 +27,29 @@
     return next;
   }
 
+  function resolveWorkspaceId(storageKey = DEFAULT_WORKSPACE_KEY, options = {}) {
+    const queryKey = options.queryKey || "force_workspace";
+    const forcedWorkspace = new URLSearchParams(window.location.search).get(queryKey) || "";
+    if (WORKSPACE_ID_PATTERN.test(forcedWorkspace)) {
+      localStorage.setItem(storageKey, forcedWorkspace);
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete(queryKey);
+        window.history.replaceState({}, document.title, url.pathname + url.search + url.hash);
+      } catch {
+        // ignore URL cleanup failures
+      }
+      return forcedWorkspace;
+    }
+    const existing = localStorage.getItem(storageKey) || "";
+    if (WORKSPACE_ID_PATTERN.test(existing)) return existing;
+    const next = options.fallbackWorkspaceId && WORKSPACE_ID_PATTERN.test(options.fallbackWorkspaceId)
+      ? options.fallbackWorkspaceId
+      : `ws_${crypto.randomUUID().replace(/-/g, "")}`;
+    localStorage.setItem(storageKey, next);
+    return next;
+  }
+
   function apiHeaders(options = {}) {
     const workspaceStorageKey = options.workspaceStorageKey || DEFAULT_WORKSPACE_KEY;
     const workspaceId = options.workspaceId || getWorkspaceId(workspaceStorageKey);
@@ -205,6 +228,7 @@
     rememberedAdminToken,
     apiHeaders,
     migrateLegacyStorageKeys,
+    resolveWorkspaceId,
     loadJson,
     saveJson,
     createPendingSaveScheduler,

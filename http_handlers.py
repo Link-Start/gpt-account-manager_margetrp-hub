@@ -31,6 +31,7 @@ class HttpHandlers:
     cpa_http_handlers: Any
     health_payload: Callable[[], dict[str, Any]]
     network_health_payload: Callable[[], dict[str, Any]]
+    public_stats_payload: Callable[[], dict[str, Any]]
     upgrade_status_payload: Callable[[], dict[str, Any]]
     get_client_mail_fetch_job: Callable[[str, str], dict[str, Any]]
     send_workspace_messages_json: WorkspaceMessagesSender
@@ -213,6 +214,12 @@ class HttpHandlers:
                     limit=params.get("limit", ["300"])[0],
                     tz_offset_minutes=params.get("tz_offset", ["480"])[0],
                 ))
+            except Exception as exc:
+                return self._bad_request(handler, exc)
+            return True
+        if parsed_request.path == "/client-api/public-stats":
+            try:
+                handler.send_json(self.public_stats_payload())
             except Exception as exc:
                 return self._bad_request(handler, exc)
             return True

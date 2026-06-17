@@ -1,6 +1,9 @@
 const WORKSPACE_ID_STORAGE_KEY = "ctgptm.workspaceId";
 
 function bootstrapWorkspaceId() {
+  if (window.GAM?.base?.resolveWorkspaceId) {
+    return window.GAM.base.resolveWorkspaceId(WORKSPACE_ID_STORAGE_KEY);
+  }
   const existing = window.GAM?.base?.getWorkspaceId?.(WORKSPACE_ID_STORAGE_KEY)
     || localStorage.getItem(WORKSPACE_ID_STORAGE_KEY)
     || "";

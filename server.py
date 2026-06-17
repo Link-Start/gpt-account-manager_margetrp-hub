@@ -536,6 +536,15 @@ def health_payload() -> dict[str, Any]:
     }
 
 
+def public_stats_payload() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "now": iso_now(),
+        "usage": usage_summary(),
+    }
+
+
 def public_top_links() -> list[dict[str, str]]:
     candidates = [
         ("商城", PUBLIC_STORE_URL),
@@ -5482,6 +5491,7 @@ def http_handlers() -> HttpHandlers:
             cpa_http_handlers=cpa_http_handlers(),
             health_payload=health_payload,
             network_health_payload=network_health_payload,
+            public_stats_payload=public_stats_payload,
             upgrade_status_payload=upgrade_status_payload,
             get_client_mail_fetch_job=get_client_mail_fetch_job,
             send_workspace_messages_json=send_workspace_messages_json,
