@@ -1,6 +1,10 @@
 import unittest
 from http import HTTPStatus
 from unittest import mock
+from pathlib import Path
+import json
+import shutil
+import tempfile
 
 import server as s
 
@@ -67,6 +71,36 @@ class MessageQueryParamTests(unittest.TestCase):
         })
         self.assertEqual(limit, "25")
         self.assertEqual(offset, "50")
+
+
+class WorkspaceRecoveryTests(unittest.TestCase):
+    def test_workspace_recovery_payload_returns_counts_only(self) -> None:
+        original_workspaces_dir = s.WORKSPACES_DIR
+        temp_root = Path(tempfile.mkdtemp())
+        try:
+            s.WORKSPACES_DIR = temp_root / "workspaces"
+            ws_dir = s.workspace_dir("ws_demo1")
+            ws_dir.mkdir(parents=True, exist_ok=True)
+            (ws_dir / "accounts.json").write_text(
+                json.dumps({"accounts": [{"email": "secret@example.com"}]}),
+                encoding="utf-8",
+            )
+            (ws_dir / "messages.json").write_text(
+                json.dumps({"messages": [{"subject": "code 123456"}]}),
+                encoding="utf-8",
+            )
+
+            payload = s.workspace_recovery_payload(["ws_demo1"])
+            row = payload["workspaces"][0]
+
+            self.assertEqual(row["workspace_id"], "ws_demo1")
+            self.assertEqual(row["counts"]["microsoft_accounts"], 1)
+            self.assertEqual(row["counts"]["messages"], 1)
+            self.assertNotIn("secret@example.com", json.dumps(payload))
+            self.assertNotIn("123456", json.dumps(payload))
+        finally:
+            s.WORKSPACES_DIR = original_workspaces_dir
+            shutil.rmtree(temp_root, ignore_errors=True)
 
     def test_workspace_messages_response_from_params_delegates_existing_contract(self) -> None:
         seen = {}

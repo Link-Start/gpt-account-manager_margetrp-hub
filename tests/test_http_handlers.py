@@ -122,6 +122,8 @@ class HttpHandlersTests(unittest.TestCase):
             health_payload=lambda: {"ok": True},
             network_health_payload=lambda: {"network": "ok"},
             public_stats_payload=lambda: {"ok": True, "usage": {"workspace_active_24h": 3}},
+            workspace_recovery_payload=lambda workspace_ids: {"ok": True, "requested": workspace_ids},
+            workspace_recovery_list_payload=lambda: {"ok": True, "workspaces": [{"workspace_id": "ws_demo"}]},
             upgrade_status_payload=lambda: {"status": "idle"},
             get_client_mail_fetch_job=lambda job_id, workspace: {"job_id": job_id, "workspace": workspace},
             send_workspace_messages_json=lambda handler, workspace_id, **kwargs: handler.send_json({"workspace": workspace_id, "messages": []}),
@@ -170,6 +172,25 @@ class HttpHandlersTests(unittest.TestCase):
         handlers.handle_get(handler)
 
         self.assertEqual(handler.sent[0][0], {"accounts": [{"email": "a@example.com"}]})
+
+    def test_client_workspace_recovery_get_checks_requested_ids(self):
+        handlers = self.make_handlers()
+        handler = DummyHandler(path="/client-api/workspaces/recover?workspace_id=ws_one01,ws_two02&workspaceId=ws_three03")
+
+        handlers.handle_get(handler)
+
+        payload, status = handler.sent[0]
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertEqual(payload["requested"], ["ws_one01", "ws_two02", "ws_three03"])
+
+    def test_admin_workspace_recovery_list_requires_auth(self):
+        handlers = self.make_handlers()
+        handler = DummyHandler(path="/admin-api/workspaces/recover")
+
+        handlers.handle_get(handler)
+
+        self.assertEqual(handler.auth_required, 1)
+        self.assertEqual(handler.sent[0][0]["workspaces"], [{"workspace_id": "ws_demo"}])
 
     def test_workspace_messages_get_requires_auth(self):
         handlers = self.make_handlers()

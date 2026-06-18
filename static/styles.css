@@ -207,6 +207,234 @@ a {
   justify-content: flex-end;
 }
 
+.recover-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  position: relative;
+  z-index: 1;
+}
+
+.recover-card {
+  width: min(960px, 100%);
+  padding: 18px;
+}
+
+.recover-head,
+.recover-tools,
+.recover-actions,
+.recover-workspace-title,
+.recover-workspace-actions,
+.recover-current {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.recover-head {
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.recover-version,
+.recover-current {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.66);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 7px 10px;
+}
+
+.recover-current {
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.recover-current strong {
+  color: var(--ink);
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+}
+
+.recover-tools {
+  align-items: end;
+  margin-bottom: 10px;
+}
+
+.recover-tools label {
+  flex: 1;
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.recover-tools input {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--ink);
+  padding: 0 10px;
+}
+
+.recover-status {
+  min-height: 26px;
+  margin: 4px 0 12px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.recover-status[data-tone="error"] {
+  color: var(--danger);
+}
+
+.recover-status[data-tone="warn"] {
+  color: #a06700;
+}
+
+.recover-list {
+  display: grid;
+  gap: 10px;
+  max-height: min(56vh, 520px);
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.recover-backup {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.58);
+  padding: 12px;
+}
+
+.recover-backup h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.recover-backup p {
+  margin: 5px 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.recover-backup-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.recover-backup-grid label:not(.inline-file-button) {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.recover-backup-grid input[type="password"] {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--ink);
+  padding: 0 10px;
+}
+
+.recover-file-button {
+  min-height: 36px;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.recover-workspace,
+.recover-empty {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.68);
+  padding: 12px;
+}
+
+.recover-workspace.active {
+  border-color: rgba(47, 117, 255, 0.52);
+  box-shadow: 0 0 0 3px rgba(47, 117, 255, 0.1);
+}
+
+.recover-workspace-title {
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.recover-workspace-title strong {
+  color: var(--ink);
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.recover-workspace-title span {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--soft-blue);
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 850;
+  padding: 4px 8px;
+}
+
+.recover-workspace p {
+  margin: 8px 0 10px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.recover-workspace-actions {
+  flex-wrap: wrap;
+}
+
+.recover-actions {
+  justify-content: flex-end;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 720px) {
+  .recover-head,
+  .recover-tools,
+  .recover-current {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .recover-tools button,
+  .recover-actions a,
+  .recover-workspace-actions button,
+  .recover-backup-grid button,
+  .recover-file-button {
+    width: 100%;
+  }
+
+  .recover-backup-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .topnav a,
 .topnav button,
 .module-tab {

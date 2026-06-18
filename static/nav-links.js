@@ -2,12 +2,19 @@
   const appendTopLinks = async () => {
     const nav = document.querySelector(".topnav");
     if (!nav || nav.dataset.runtimeLinks === "loaded") return;
+    const beforeNode = nav.querySelector(".github-link");
+    if (!nav.querySelector(".recover-link")) {
+      const recoverLink = document.createElement("a");
+      recoverLink.className = "recover-link";
+      recoverLink.href = "/recover.html";
+      recoverLink.textContent = "找回工作区";
+      nav.insertBefore(recoverLink, beforeNode);
+    }
     try {
       const response = await fetch("/public-config", { cache: "no-store" });
       if (!response.ok) return;
       const config = await response.json();
       const links = Array.isArray(config.top_links) ? config.top_links : [];
-      const beforeNode = nav.querySelector(".github-link");
       links
         .filter((item) => item && item.url && item.label)
         .forEach((item) => {

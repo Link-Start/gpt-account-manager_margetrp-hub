@@ -463,6 +463,104 @@ def workspace_message_row_key(row: dict[str, Any]) -> str:
     return key if key.replace("|", "").strip() else json_row_fallback_key(row)
 
 
+WORKSPACE_RECOVERY_FILES = (
+    "accounts.json",
+    "temp_addresses.json",
+    "generic_accounts.json",
+    "messages.json",
+    "refresh_results.json",
+    "login_history.json",
+)
+
+
+def workspace_latest_activity(workspace_id: str) -> str:
+    latest_ts = 0.0
+    root = workspace_dir(workspace_id)
+    for filename in WORKSPACE_RECOVERY_FILES:
+        target = root / filename
+        if target.exists():
+            latest_ts = max(latest_ts, target.stat().st_mtime)
+    if latest_ts <= 0:
+        return ""
+    return datetime.fromtimestamp(latest_ts, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def workspace_recovery_row(workspace_id: str) -> dict[str, Any] | None:
+    try:
+        normalized = parse_workspace_id(workspace_id)
+    except ValueError:
+        return None
+    if not normalized:
+        return None
+    root = workspace_dir(normalized)
+    if not root.exists() or not root.is_dir():
+        return {
+            "workspace_id": normalized,
+            "exists": False,
+            "counts": workspace_counts(normalized),
+            "total_items": 0,
+            "latest_activity": "",
+        }
+    counts = workspace_counts(normalized)
+    refresh_count = file_item_count(workspace_file(normalized, "refresh_results.json"), "results")
+    history_count = file_item_count(workspace_file(normalized, "login_history.json"), "history")
+    safe_counts = {
+        "microsoft_accounts": max(0, counts.get("microsoft_accounts", 0)),
+        "temp_addresses": max(0, counts.get("temp_addresses", 0)),
+        "generic_accounts": max(0, counts.get("generic_accounts", 0)),
+        "messages": max(0, counts.get("messages", 0)),
+        "refresh_results": max(0, refresh_count),
+        "login_history": max(0, history_count),
+    }
+    total_items = sum(safe_counts.values())
+    return {
+        "workspace_id": normalized,
+        "exists": True,
+        "counts": safe_counts,
+        "total_items": total_items,
+        "latest_activity": workspace_latest_activity(normalized),
+    }
+
+
+def workspace_recovery_payload(workspace_ids: list[str]) -> dict[str, Any]:
+    seen: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    for raw in workspace_ids:
+        try:
+            workspace_id = parse_workspace_id(raw)
+        except ValueError:
+            continue
+        if not workspace_id or workspace_id in seen:
+            continue
+        seen.add(workspace_id)
+        row = workspace_recovery_row(workspace_id)
+        if row:
+            rows.append(row)
+    rows.sort(key=lambda item: (item.get("latest_activity") or "", item.get("total_items") or 0), reverse=True)
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "workspaces": rows,
+    }
+
+
+def workspace_recovery_list_payload() -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    if WORKSPACES_DIR.exists():
+        for item in WORKSPACES_DIR.iterdir():
+            if not item.is_dir():
+                continue
+            row = workspace_recovery_row(item.name)
+            if row:
+                rows.append(row)
+    rows.sort(key=lambda item: (item.get("latest_activity") or "", item.get("total_items") or 0), reverse=True)
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "workspaces": rows,
+    }
+
+
 def usage_summary() -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     active_cutoff = now - timedelta(hours=24)
@@ -475,7 +573,7 @@ def usage_summary() -> dict[str, Any]:
                 continue
             workspaces_total += 1
             latest_ts = 0.0
-            for filename in ("accounts.json", "temp_addresses.json", "generic_accounts.json", "messages.json", "refresh_results.json", "login_history.json"):
+            for filename in WORKSPACE_RECOVERY_FILES:
                 target = item / filename
                 if target.exists():
                     latest_ts = max(latest_ts, target.stat().st_mtime)
@@ -5492,6 +5590,8 @@ def http_handlers() -> HttpHandlers:
             health_payload=health_payload,
             network_health_payload=network_health_payload,
             public_stats_payload=public_stats_payload,
+            workspace_recovery_payload=workspace_recovery_payload,
+            workspace_recovery_list_payload=workspace_recovery_list_payload,
             upgrade_status_payload=upgrade_status_payload,
             get_client_mail_fetch_job=get_client_mail_fetch_job,
             send_workspace_messages_json=send_workspace_messages_json,
@@ -8121,6 +8221,8 @@ class Handler(BaseHTTPRequestHandler):
             target = STATIC_DIR / "mailboxes.html"
         elif path in {"/warehouse", "/warehouse/"}:
             target = STATIC_DIR / "warehouse.html"
+        elif path in {"/recover", "/recover/"}:
+            target = STATIC_DIR / "recover.html"
         else:
             target = (STATIC_DIR / path.lstrip("/")).resolve()
             if STATIC_DIR.resolve() not in target.parents and target != STATIC_DIR.resolve():

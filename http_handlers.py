@@ -14,6 +14,8 @@ WorkspaceLoader = Callable[[str], Any]
 WorkspaceMessagesSender = Callable[..., None]
 DashboardStatsBuilder = Callable[..., dict[str, Any]]
 LoginExceptionClassifier = Callable[[Exception], dict[str, Any]]
+WorkspaceRecoveryBuilder = Callable[[list[str]], dict[str, Any]]
+WorkspaceRecoveryListBuilder = Callable[[], dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,8 @@ class HttpHandlers:
     health_payload: Callable[[], dict[str, Any]]
     network_health_payload: Callable[[], dict[str, Any]]
     public_stats_payload: Callable[[], dict[str, Any]]
+    workspace_recovery_payload: WorkspaceRecoveryBuilder
+    workspace_recovery_list_payload: WorkspaceRecoveryListBuilder
     upgrade_status_payload: Callable[[], dict[str, Any]]
     get_client_mail_fetch_job: Callable[[str, str], dict[str, Any]]
     send_workspace_messages_json: WorkspaceMessagesSender
@@ -151,6 +155,7 @@ class HttpHandlers:
             "/refresh": "refresh.html",
             "/mailboxes": "mailboxes.html",
             "/warehouse": "warehouse.html",
+            "/recover": "recover.html",
         }
         normalized = request_path.lower().rstrip("/")
         if normalized in static_aliases:
@@ -171,6 +176,10 @@ class HttpHandlers:
         if request_path == "/admin-api/upgrade/status":
             handler.require_auth()
             handler.send_json(self.upgrade_status_payload())
+            return True
+        if request_path == "/admin-api/workspaces/recover":
+            handler.require_auth()
+            handler.send_json(self.workspace_recovery_list_payload())
             return True
         if request_path.lower() == "/health.html":
             handler.require_admin_page_auth()
@@ -222,6 +231,16 @@ class HttpHandlers:
                 handler.send_json(self.public_stats_payload())
             except Exception as exc:
                 return self._bad_request(handler, exc)
+            return True
+        if parsed_request.path == "/client-api/workspaces/recover":
+            try:
+                params = urllib.parse.parse_qs(parsed_request.query)
+                workspace_ids: list[str] = []
+                for value in params.get("workspace_id", []) + params.get("workspaceId", []):
+                    workspace_ids.extend(str(value or "").split(","))
+                handler.send_json(self.workspace_recovery_payload(workspace_ids))
+            except Exception as exc:
+                return self._bad_request(handler, exc, code="workspace_recovery_failed")
             return True
         if parsed_request.path == "/client-api/accounts":
             try:

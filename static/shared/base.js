@@ -2,6 +2,41 @@
   const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{5,63}$/;
   const DEFAULT_WORKSPACE_KEY = "ctgptm.workspaceId";
   const DEFAULT_ADMIN_TOKEN_KEY = "ctgptm.admin.toolToken";
+  const DEFAULT_WORKSPACE_HISTORY_KEY = "ctgptm.workspaceHistory";
+
+  function loadWorkspaceHistory(storageKey = DEFAULT_WORKSPACE_HISTORY_KEY) {
+    try {
+      const rows = JSON.parse(localStorage.getItem(storageKey) || "[]");
+      return Array.isArray(rows)
+        ? rows.filter((item) => item && WORKSPACE_ID_PATTERN.test(String(item.id || "")))
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function rememberWorkspaceId(workspaceId, options = {}) {
+    if (!WORKSPACE_ID_PATTERN.test(String(workspaceId || ""))) return "";
+    const storageKey = options.historyStorageKey || DEFAULT_WORKSPACE_HISTORY_KEY;
+    const currentStorageKey = options.currentStorageKey || DEFAULT_WORKSPACE_KEY;
+    const label = String(options.label || "").trim();
+    const now = new Date().toISOString();
+    const history = loadWorkspaceHistory(storageKey);
+    const previous = history.find((item) => item.id === workspaceId);
+    const existing = history.filter((item) => item.id !== workspaceId);
+    const next = [
+      {
+        id: workspaceId,
+        label,
+        last_seen_at: now,
+        first_seen_at: previous?.first_seen_at || now,
+      },
+      ...existing,
+    ].slice(0, 24);
+    localStorage.setItem(storageKey, JSON.stringify(next));
+    localStorage.setItem(currentStorageKey, workspaceId);
+    return workspaceId;
+  }
 
   function persistAdminTokenFromQuery(options = {}) {
     const {
@@ -21,17 +56,22 @@
 
   function getWorkspaceId(storageKey = DEFAULT_WORKSPACE_KEY) {
     const existing = localStorage.getItem(storageKey) || "";
-    if (WORKSPACE_ID_PATTERN.test(existing)) return existing;
+    if (WORKSPACE_ID_PATTERN.test(existing)) {
+      rememberWorkspaceId(existing, { currentStorageKey: storageKey });
+      return existing;
+    }
     const next = `ws_${crypto.randomUUID().replace(/-/g, "")}`;
-    localStorage.setItem(storageKey, next);
-    return next;
+    return rememberWorkspaceId(next, { currentStorageKey: storageKey });
   }
 
   function resolveWorkspaceId(storageKey = DEFAULT_WORKSPACE_KEY, options = {}) {
     const queryKey = options.queryKey || "force_workspace";
     const forcedWorkspace = new URLSearchParams(window.location.search).get(queryKey) || "";
     if (WORKSPACE_ID_PATTERN.test(forcedWorkspace)) {
-      localStorage.setItem(storageKey, forcedWorkspace);
+      rememberWorkspaceId(forcedWorkspace, {
+        currentStorageKey: storageKey,
+        label: options.forcedLabel || "手动恢复",
+      });
       try {
         const url = new URL(window.location.href);
         url.searchParams.delete(queryKey);
@@ -42,12 +82,14 @@
       return forcedWorkspace;
     }
     const existing = localStorage.getItem(storageKey) || "";
-    if (WORKSPACE_ID_PATTERN.test(existing)) return existing;
+    if (WORKSPACE_ID_PATTERN.test(existing)) {
+      rememberWorkspaceId(existing, { currentStorageKey: storageKey });
+      return existing;
+    }
     const next = options.fallbackWorkspaceId && WORKSPACE_ID_PATTERN.test(options.fallbackWorkspaceId)
       ? options.fallbackWorkspaceId
       : `ws_${crypto.randomUUID().replace(/-/g, "")}`;
-    localStorage.setItem(storageKey, next);
-    return next;
+    return rememberWorkspaceId(next, { currentStorageKey: storageKey });
   }
 
   function apiHeaders(options = {}) {
@@ -225,6 +267,8 @@
   window.GAM.base = {
     persistAdminTokenFromQuery,
     getWorkspaceId,
+    rememberWorkspaceId,
+    loadWorkspaceHistory,
     rememberedAdminToken,
     apiHeaders,
     migrateLegacyStorageKeys,
